@@ -1,0 +1,17 @@
+[package]
+name = "pullkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Keep a configured set of Git repositories up to date"
+
+[build-dependencies]
+png = "0.17"
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+pullkit-core = { path = "../crates/pullkit-core" }
+serde.workspace = true
+tauri = { version = "2", features = [] }

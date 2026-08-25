@@ -1,0 +1,8 @@
+repos:
+  - name: myapp
+    path: /Users/casper/workspace/myapp
+    build_command: cargo build
+  - name: another-app
+    path: /Users/casper/workspace/another-app
+    build_command: npm run build
+

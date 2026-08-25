@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>pullkit</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="main.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>pullkit</h1>
+          <p>Bring your repositories up to date.</p>
+        </div>
+        <button id="refresh" class="secondary">Refresh</button>
+      </header>
+
+      <section class="panel repo-panel">
+        <div class="panel-heading">
+          <h2>Repositories</h2>
+          <label class="select-all"><input id="select-all" type="checkbox" /> Select all</label>
+        </div>
+        <div id="repos" class="repo-list"><p class="muted">Loading configuration…</p></div>
+        <div class="actions">
+          <span id="selection-count" class="muted">0 selected</span>
+          <button id="sync" disabled>Sync selected</button>
+        </div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-heading"><h2>Run log</h2><span id="run-state" class="badge">Ready</span></div>
+        <pre id="log" aria-live="polite">Select repositories and start a sync.</pre>
+      </section>
+    </main>
+  </body>
+</html>
+
