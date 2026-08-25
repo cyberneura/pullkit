@@ -1,25 +1,25 @@
-:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; color: #17211b; background: #f3f5f1; font-synthesis: none; }
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; color: #17211b; background: #fff; font-synthesis: none; }
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; }
-main { max-width: 820px; margin: 0 auto; padding: 30px; }
-header, .panel-heading, .actions, .repo { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-header { margin-bottom: 22px; }
-h1 { margin: 0; font-size: 30px; letter-spacing: -1px; }
+main { width: 100%; }
+.panel-heading, .actions, .repo, .toolbar-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 h2 { margin: 0; font-size: 15px; }
 p { margin: 4px 0 0; }
-.panel { overflow: hidden; margin-bottom: 18px; border: 1px solid #dce2db; border-radius: 12px; background: #fff; box-shadow: 0 4px 18px #2535280b; }
 .panel-heading, .actions { padding: 14px 16px; }
-.panel-heading { border-bottom: 1px solid #edf0ec; }
-.repo-list { min-height: 80px; }
+.panel-heading { border-bottom: 1px solid #dfe3df; background: #f7f8f7; }
+.repo-list { width: 100%; min-height: 80px; }
 .repo { justify-content: flex-start; padding: 13px 16px; border-bottom: 1px solid #edf0ec; cursor: pointer; }
 .repo:hover { background: #f8faf7; }
+.repo.missing { background: #f2f3f2; color: #858b87; cursor: not-allowed; }
+.repo.missing .repo-path { color: #969b97; }
 .repo-info { min-width: 0; flex: 1; }
 .repo-name { font-weight: 650; }
 .repo-path { overflow: hidden; margin-top: 3px; color: #768078; font-family: ui-monospace, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .status { border-radius: 999px; padding: 4px 8px; background: #edf7ee; color: #277039; font-size: 11px; }
 .status.dirty, .status.error { background: #fff0ed; color: #a23b2b; }
 .status.branch { background: #fff6df; color: #8a6409; }
-.actions { background: #fafbf9; }
+.status.missing { background: #e3e5e3; color: #747a76; }
+.actions { border-bottom: 1px solid #dfe3df; background: #fafbf9; }
 button { border: 0; border-radius: 8px; padding: 9px 14px; background: #246b3a; color: white; font: inherit; font-weight: 600; cursor: pointer; }
 button.secondary { border: 1px solid #d5dbd4; background: white; color: #344039; }
 button:disabled { cursor: not-allowed; opacity: .45; }
@@ -30,4 +30,3 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: #246b3a; }
 .badge.running { background: #e7f0ff; color: #285c9b; }
 .badge.done { background: #e8f6ea; color: #277039; }
 .empty { padding: 25px 16px; text-align: center; }
-

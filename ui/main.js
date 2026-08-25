@@ -15,7 +15,7 @@ function selectedNames() {
 }
 
 function updateSelection() {
-  const all = [...document.querySelectorAll(".repo-check")];
+  const all = [...document.querySelectorAll(".repo-check:not(:disabled)")];
   const selected = selectedNames().length;
   countEl.textContent = `${selected} selected`;
   syncButton.disabled = syncing || selected === 0;
@@ -24,6 +24,7 @@ function updateSelection() {
 }
 
 function statusFor(repo) {
+  if (!repo.path_exists) return ["missing", "Missing"];
   if (repo.error) return ["error", "Error"];
   if (!repo.clean) return ["dirty", "Dirty"];
   if (!repo.on_main) return ["branch", repo.branch || "Other branch"];
@@ -39,8 +40,9 @@ async function loadRepos() {
     } else {
       reposEl.innerHTML = repos.map((repo) => {
         const [kind, text] = statusFor(repo);
-        return `<label class="repo" title="${escapeHtml(repo.error || "")}">
-          <input class="repo-check" type="checkbox" value="${escapeHtml(repo.name)}" />
+        const missing = !repo.path_exists;
+        return `<label class="repo${missing ? " missing" : ""}" title="${escapeHtml(repo.error || "")}">
+          <input class="repo-check" data-annotate="checkbox-repository" type="checkbox" value="${escapeHtml(repo.name)}"${missing ? " disabled" : ""} />
           <span class="repo-info"><span class="repo-name">${escapeHtml(repo.name)}</span><span class="repo-path">${escapeHtml(repo.path)}</span></span>
           <span class="status ${kind}">${escapeHtml(text)}</span>
         </label>`;
@@ -58,7 +60,7 @@ function escapeHtml(value) {
 }
 
 selectAll.addEventListener("change", () => {
-  document.querySelectorAll(".repo-check").forEach((el) => { el.checked = selectAll.checked; });
+  document.querySelectorAll(".repo-check:not(:disabled)").forEach((el) => { el.checked = selectAll.checked; });
   updateSelection();
 });
 refreshButton.addEventListener("click", loadRepos);
@@ -93,4 +95,3 @@ listen("sync-log", (event) => {
 });
 
 loadRepos();
-

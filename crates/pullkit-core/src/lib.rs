@@ -6,6 +6,8 @@ use std::{
     process::{Command, Output},
 };
 
+pub const EXAMPLE_CONFIG: &str = include_str!("../../../config.example.yaml");
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -24,6 +26,7 @@ pub struct RepoConfig {
 pub struct RepoStatus {
     pub name: String,
     pub path: PathBuf,
+    pub path_exists: bool,
     pub branch: Option<String>,
     pub clean: bool,
     pub on_main: bool,
@@ -57,6 +60,31 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config/pullkit/config.yaml"))
 }
 
+pub fn initialize_config() -> Result<Option<PathBuf>> {
+    let path = config_path()?;
+    let created = initialize_config_at(&path)?;
+    Ok(created.then_some(path))
+}
+
+fn initialize_config_at(path: &Path) -> Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+
+    let directory = path
+        .parent()
+        .ok_or_else(|| anyhow!("config path has no parent: {}", path.display()))?;
+    fs::create_dir_all(directory).with_context(|| {
+        format!(
+            "could not create config directory at {}",
+            directory.display()
+        )
+    })?;
+    fs::write(path, EXAMPLE_CONFIG)
+        .with_context(|| format!("could not create sample config at {}", path.display()))?;
+    Ok(true)
+}
+
 pub fn load_config() -> Result<Config> {
     load_config_from(&config_path()?)
 }
@@ -64,10 +92,30 @@ pub fn load_config() -> Result<Config> {
 pub fn load_config_from(path: &Path) -> Result<Config> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("could not read config at {}", path.display()))?;
-    let config: Config = serde_yaml::from_str(&contents)
+    let mut config: Config = serde_yaml::from_str(&contents)
         .with_context(|| format!("invalid YAML in {}", path.display()))?;
+    expand_repo_paths(&mut config)?;
     validate_config(&config)?;
     Ok(config)
+}
+
+fn expand_repo_paths(config: &mut Config) -> Result<()> {
+    if !config.repos.iter().any(|repo| repo.path.starts_with("~")) {
+        return Ok(());
+    }
+
+    let home = env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
+    expand_repo_paths_from(config, Path::new(&home));
+    Ok(())
+}
+
+fn expand_repo_paths_from(config: &mut Config, home: &Path) {
+    for repo in &mut config.repos {
+        let Ok(relative) = repo.path.strip_prefix("~") else {
+            continue;
+        };
+        repo.path = home.join(relative);
+    }
 }
 
 fn validate_config(config: &Config) -> Result<()> {
@@ -89,11 +137,13 @@ fn validate_config(config: &Config) -> Result<()> {
 }
 
 pub fn inspect(repo: &RepoConfig) -> RepoStatus {
+    let path_exists = repo.path.exists();
     match inspect_inner(repo) {
         Ok(status) => status,
         Err(error) => RepoStatus {
             name: repo.name.clone(),
             path: repo.path.clone(),
+            path_exists,
             branch: None,
             clean: false,
             on_main: false,
@@ -124,6 +174,7 @@ fn inspect_inner(repo: &RepoConfig) -> Result<RepoStatus> {
     Ok(RepoStatus {
         name: repo.name.clone(),
         path: repo.path.clone(),
+        path_exists: true,
         branch: Some(branch),
         clean,
         on_main,
@@ -314,6 +365,7 @@ fn indent(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_example_config() {
@@ -326,5 +378,59 @@ mod tests {
             config.repos[0].build_command.as_deref(),
             Some("cargo build")
         );
+    }
+
+    #[test]
+    fn initializes_missing_config_without_overwriting_it() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("pullkit-{unique}"));
+        let path = directory.join("nested/config.yaml");
+
+        assert!(initialize_config_at(&path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), EXAMPLE_CONFIG);
+
+        fs::write(&path, "repos: []\n").unwrap();
+        assert!(!initialize_config_at(&path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "repos: []\n");
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn expands_current_user_tilde_in_repo_paths() {
+        let mut config: Config = serde_yaml::from_str(
+            "repos:\n  - name: home\n    path: ~\n  - name: nested\n    path: ~/workspace/app\n  - name: absolute\n    path: /tmp/app\n  - name: another-user\n    path: ~someone/app\n",
+        )
+        .unwrap();
+
+        expand_repo_paths_from(&mut config, Path::new("/Users/example"));
+
+        assert_eq!(config.repos[0].path, Path::new("/Users/example"));
+        assert_eq!(
+            config.repos[1].path,
+            Path::new("/Users/example/workspace/app")
+        );
+        assert_eq!(config.repos[2].path, Path::new("/tmp/app"));
+        assert_eq!(config.repos[3].path, Path::new("~someone/app"));
+    }
+
+    #[test]
+    fn reports_whether_repo_path_exists() {
+        let existing = inspect(&RepoConfig {
+            name: "existing".into(),
+            path: env::temp_dir(),
+            build_command: None,
+        });
+        let missing = inspect(&RepoConfig {
+            name: "missing".into(),
+            path: env::temp_dir().join("pullkit-path-that-does-not-exist"),
+            build_command: None,
+        });
+
+        assert!(existing.path_exists);
+        assert!(!missing.path_exists);
     }
 }

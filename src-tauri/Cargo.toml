@@ -12,6 +12,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.29"
 pullkit-core = { path = "../crates/pullkit-core" }
 serde.workspace = true
 tauri = { version = "2", features = [] }

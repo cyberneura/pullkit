@@ -1,0 +1,7 @@
+menu:
+  - title: "Run TUI"
+    shell: "cargo run"
+  - title: "Run GUI"
+    shell: "cargo run -- --gui"
+  - title: "Build release"
+    shell: "cargo build --release"
