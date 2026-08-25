@@ -51,7 +51,8 @@ fn main() {
 }
 
 fn run(args: Args) -> Result<()> {
-    if let Some(path) = initialize_config()? {
+    let initialized_path = initialize_config()?;
+    if let Some(path) = &initialized_path {
         print_config_help(
             "No configuration file was found.",
             &format!(
@@ -64,22 +65,30 @@ fn run(args: Args) -> Result<()> {
         }
     }
 
-    if load_config()?.repos.is_empty() {
-        let path = config_path()?;
-        print_config_help(
-            "No repositories are configured.",
-            &format!("Add repository entries to {}.", path.display()),
-        );
-        if !args.gui {
-            return Ok(());
+    if args.gui {
+        if initialized_path.is_none()
+            && matches!(load_config(), Ok(config) if config.repos.is_empty())
+        {
+            print_empty_config_help()?;
         }
+        return run_gui();
     }
 
-    if args.gui {
-        run_gui()
-    } else {
-        run_cli(args.command)
+    if load_config()?.repos.is_empty() {
+        print_empty_config_help()?;
+        return Ok(());
     }
+
+    run_cli(args.command)
+}
+
+fn print_empty_config_help() -> Result<()> {
+    let path = config_path()?;
+    print_config_help(
+        "No repositories are configured.",
+        &format!("Add repository entries to {}.", path.display()),
+    );
+    Ok(())
 }
 
 fn print_config_help(message: &str, instruction: &str) {
