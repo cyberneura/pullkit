@@ -59,7 +59,9 @@ fn run(args: Args) -> Result<()> {
                 path.display()
             ),
         );
-        return Ok(());
+        if !args.gui {
+            return Ok(());
+        }
     }
 
     if load_config()?.repos.is_empty() {
@@ -68,7 +70,9 @@ fn run(args: Args) -> Result<()> {
             "No repositories are configured.",
             &format!("Add repository entries to {}.", path.display()),
         );
-        return Ok(());
+        if !args.gui {
+            return Ok(());
+        }
     }
 
     if args.gui {
