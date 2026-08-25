@@ -8,7 +8,7 @@ Inspect and sync configured Git repositories.
 ## Usage
 
 ```bash
-# List repo status
+# Open the interactive terminal interface
 pullkit
 
 # Sync all eligible repos
@@ -21,6 +21,10 @@ pullkit sync --only myapp,another-app
 pullkit --gui
 ```
 
+In the terminal interface, use Up/Down or `j`/`k` to move, Space to select repositories,
+`a` to select all available repositories, Enter to sync, and `q` or Esc to quit.
+When standard input or output is redirected, `pullkit` prints the repository status as a table.
+
 ## Configuration
 
 `~/.config/pullkit/config.yaml`:
@@ -28,12 +32,16 @@ pullkit --gui
 ```yaml
 repos:
   - name: myapp
-    path: /Users/you/projects/myapp
+    path: ~/projects/myapp
     build_command: cargo build
   - name: web-frontend
-    path: /Users/you/projects/web-frontend
+    path: ~/projects/web-frontend
     build_command: npm run build
 ```
+
+If the configuration file does not exist, pullkit creates it from the sample above and prints
+setup help. The same help is printed when the configuration contains no repositories.
+Repository paths may use `~` to refer to the current user's home directory.
 
 ## Per-repo behavior
 
