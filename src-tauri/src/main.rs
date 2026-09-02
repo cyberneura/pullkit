@@ -20,6 +20,8 @@ use std::{
     time::Duration,
 };
 use tauri::Emitter;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Parser)]
 #[command(
@@ -124,13 +126,22 @@ fn run_cli(command: Option<CliCommand>) -> Result<()> {
     }
 }
 
+/// Nothing bounds the width of a pipe, so the columns here are padded and never
+/// cut: two repositories that share their first twenty columns must not come
+/// out looking like the same one.
 fn print_repo_list(repos: &[RepoConfig]) {
     let statuses: Vec<_> = repos.iter().map(pullkit_core::inspect).collect();
     let mut commits: Vec<Option<RepoCommits>> = vec![None; repos.len()];
     inspect_commits_parallel(repos, |index, item| commits[index] = Some(item));
     println!(
-        "{:<20} {:<8} {:<12} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} PATH",
-        "REPOSITORY", "TREE", "BRANCH", "ON MAIN", "LOCAL COMMIT", "REMOTE COMMIT", "DIFFERENCE"
+        "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} PATH",
+        pad_to_width("REPOSITORY", NAME_WIDTH),
+        "TREE",
+        pad_to_width("BRANCH", BRANCH_WIDTH),
+        "ON MAIN",
+        "LOCAL COMMIT",
+        "REMOTE COMMIT",
+        "DIFFERENCE"
     );
     for (status, commits) in statuses.iter().zip(&commits) {
         print_status(status, commits.as_ref());
@@ -153,6 +164,9 @@ fn spawn_commit_inspection(repos: &[RepoConfig]) -> Receiver<(usize, RepoCommits
 /// Wide enough for the longest label, `diverged by 12 months`.
 const DIFFERENCE_WIDTH: usize = 21;
 const DATE_WIDTH: usize = 16;
+const NAME_WIDTH: usize = 20;
+const STATUS_WIDTH: usize = 14;
+const BRANCH_WIDTH: usize = 12;
 
 struct CommitCells {
     local: String,
@@ -378,7 +392,11 @@ fn draw_tui(
     let first_row = state.cursor.saturating_sub(visible_rows - 1);
 
     let header = tui_row(
-        &format!("    {:<20} {:<14} ", "REPOSITORY", "STATUS"),
+        &format!(
+            "    {} {} ",
+            fit_to_width("REPOSITORY", NAME_WIDTH),
+            fit_to_width("STATUS", STATUS_WIDTH)
+        ),
         "PATH",
         &CommitCells {
             local: "LOCAL COMMIT".into(),
@@ -424,7 +442,11 @@ fn draw_tui(
 
         let checkbox = if state.selected[index] { "[x]" } else { "[ ]" };
         let line = tui_row(
-            &format!("{checkbox} {:<20} {:<14} ", status.name, tui_status(status)),
+            &format!(
+                "{checkbox} {} {} ",
+                fit_to_width(&status.name, NAME_WIDTH),
+                fit_to_width(&tui_status(status), STATUS_WIDTH)
+            ),
             &status.path.display().to_string(),
             &commit_cells(commits[index].as_ref()),
             width,
@@ -446,7 +468,7 @@ fn draw_tui(
         MoveTo(0, height.saturating_sub(1)),
         Clear(ClearType::CurrentLine),
         SetForegroundColor(Color::DarkCyan),
-        Print(truncate_line(&footer, width)),
+        Print(truncate_to_width(&footer, width)),
         ResetColor
     )?;
     stdout.flush()?;
@@ -463,24 +485,24 @@ fn draw_tui(
 /// belongs.
 fn tui_row(left: &str, path: &str, cells: &CommitCells, width: usize) -> String {
     const MIN_PATH_WIDTH: usize = 8;
-    let difference = format!("{:<DIFFERENCE_WIDTH$}", cells.difference);
+    let difference = pad_to_width(&cells.difference, DIFFERENCE_WIDTH);
     let candidates = [
         format!(
-            "{:<DATE_WIDTH$}  {:<DATE_WIDTH$}  {difference}",
-            cells.local, cells.remote
+            "{}  {}  {difference}",
+            fit_to_width(&cells.local, DATE_WIDTH),
+            fit_to_width(&cells.remote, DATE_WIDTH)
         ),
-        format!("{:<DATE_WIDTH$}  {difference}", cells.local),
+        format!("{}  {difference}", fit_to_width(&cells.local, DATE_WIDTH)),
         difference.clone(),
     ];
 
     for columns in &candidates {
-        let fixed = left.chars().count() + columns.chars().count() + 2;
+        let fixed = display_width(left) + display_width(columns) + 2;
         if width >= fixed + MIN_PATH_WIDTH {
             let path_width = width - fixed;
-            let path = truncate_line(path, path_width);
-            return format!("{left}{path:<path_width$}  {columns}");
+            return format!("{left}{}  {columns}", fit_to_width(path, path_width));
         }
-        if width >= left.chars().count() + columns.chars().count() {
+        if width >= display_width(left) + display_width(columns) {
             return format!("{left}{columns}");
         }
     }
@@ -491,12 +513,11 @@ fn tui_row(left: &str, path: &str, cells: &CommitCells, width: usize) -> String 
     // down the list instead of shifting with each label. A label longer than the
     // usual reservation still gets the room it needs, or the row would run past
     // the edge and wrap onto the next one.
-    let reserved = DIFFERENCE_WIDTH.max(cells.difference.chars().count());
+    let reserved = DIFFERENCE_WIDTH.max(display_width(&cells.difference));
     let Some(left_width) = width.checked_sub(reserved + 1) else {
-        return truncate_line(&cells.difference, width);
+        return truncate_to_width(&cells.difference, width);
     };
-    let left = truncate_line(left, left_width);
-    format!("{left:<left_width$} {}", cells.difference)
+    format!("{} {}", fit_to_width(left, left_width), cells.difference)
 }
 
 fn tui_status(status: &RepoStatus) -> String {
@@ -534,8 +555,48 @@ fn tui_status_color(status: &RepoStatus) -> Color {
     Color::Green
 }
 
-fn truncate_line(line: &str, width: usize) -> String {
-    line.chars().take(width).collect()
+/// The number of columns a terminal draws the text in. A Japanese character or
+/// an emoji takes two, so counting scalars would understate it and let a row
+/// run past the edge and wrap onto the next one.
+///
+/// The count is taken per grapheme cluster, not per scalar. An emoji assembled
+/// from several scalars, a skin tone or a family joined with zero width
+/// joiners, is drawn in two columns however many scalars went into it.
+fn display_width(text: &str) -> usize {
+    text.graphemes(true).map(UnicodeWidthStr::width).sum()
+}
+
+/// Cuts the text down to `width` columns, never inside a grapheme cluster: half
+/// of an emoji is not a character the terminal can draw. A cluster that would
+/// straddle the limit is dropped, so a row can come out one column short of the
+/// width rather than one past it.
+fn truncate_to_width(text: &str, width: usize) -> String {
+    let mut kept = String::new();
+    let mut used = 0;
+    for cluster in text.graphemes(true) {
+        let cluster_width = UnicodeWidthStr::width(cluster);
+        if used + cluster_width > width {
+            break;
+        }
+        kept.push_str(cluster);
+        used += cluster_width;
+    }
+    kept
+}
+
+/// Fills the text out to `width` columns, and leaves it alone when it already
+/// runs past them. For the last column on a row, where there is nothing to keep
+/// the text clear of and cutting it would lose what the row is there to say.
+fn pad_to_width(text: &str, width: usize) -> String {
+    let padding = width.saturating_sub(display_width(text));
+    format!("{text}{}", " ".repeat(padding))
+}
+
+/// Cuts the text to `width` columns and fills what is left with spaces, so the
+/// next column starts where it does on every other row. `{:<width$}` cannot do
+/// this, because it counts scalars.
+fn fit_to_width(text: &str, width: usize) -> String {
+    pad_to_width(&truncate_to_width(text, width), width)
 }
 
 fn select_repos(repos: &[RepoConfig], only: &[String]) -> Result<Vec<RepoConfig>> {
@@ -560,10 +621,10 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
     let cells = commit_cells(commits);
     if let Some(error) = &status.error {
         println!(
-            "{:<20} {:<8} {:<12} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {} ({error})",
-            status.name,
+            "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {} ({error})",
+            pad_to_width(&status.name, NAME_WIDTH),
             "error",
-            "-",
+            pad_to_width("-", BRANCH_WIDTH),
             "-",
             cells.local,
             cells.remote,
@@ -572,10 +633,10 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
         );
     } else {
         println!(
-            "{:<20} {:<8} {:<12} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {}",
-            status.name,
+            "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {}",
+            pad_to_width(&status.name, NAME_WIDTH),
             if status.clean { "clean" } else { "dirty" },
-            status.branch.as_deref().unwrap_or("-"),
+            pad_to_width(status.branch.as_deref().unwrap_or("-"), BRANCH_WIDTH),
             if status.on_main { "yes" } else { "no" },
             cells.local,
             cells.remote,
@@ -589,8 +650,8 @@ fn print_summary(results: &[SyncResult]) {
     println!("\nSummary");
     for result in results {
         println!(
-            "  {:<20} {:<16} {}",
-            result.name,
+            "  {} {:<16} {}",
+            pad_to_width(&result.name, NAME_WIDTH),
             format!("{:?}", result.outcome).to_lowercase(),
             result.message
         );
@@ -744,8 +805,114 @@ mod tests {
     }
 
     #[test]
+    fn display_width_counts_an_emoji_sequence_as_one_pair_of_columns() {
+        // Arrange & Act & Assert: the scalar count is wrong for every one of
+        // these; the number of columns a terminal draws is what matters.
+        assert_eq!(display_width("repo"), 4);
+        assert_eq!(display_width("日本語"), 6);
+        assert_eq!(display_width("👍"), 2);
+        assert_eq!(display_width("👍🏽"), 2, "an emoji with a skin tone");
+        assert_eq!(
+            display_width("👨‍👩‍👧‍👦"),
+            2,
+            "a family joined with zero width joiners"
+        );
+        assert_eq!(
+            display_width("❤️"),
+            2,
+            "an emoji written with a variation selector"
+        );
+        assert_eq!(
+            display_width("🇯🇵"),
+            2,
+            "a flag built from regional indicators"
+        );
+        assert_eq!(display_width("🚀 deploy 日本"), 14);
+    }
+
+    #[test]
+    fn truncation_never_splits_an_emoji() {
+        // Arrange
+        let family = "👨‍👩‍👧‍👦";
+        let text = format!("{family}{family}");
+
+        // Act: three columns hold one two column emoji and no half of another.
+        let kept = truncate_to_width(&text, 3);
+
+        // Assert
+        assert_eq!(kept, family);
+        assert_eq!(display_width(&kept), 2);
+        // A single column cannot hold it at all, and half of it is not a thing
+        // the terminal can draw.
+        assert_eq!(truncate_to_width(&text, 1), "");
+    }
+
+    #[test]
+    fn padding_fills_the_columns_a_wide_name_leaves() {
+        // Arrange & Act
+        let wide = fit_to_width("日本語", 10);
+        let narrow = fit_to_width("repo", 10);
+        let overlong = fit_to_width("日本語リポジトリ", 7);
+        let unbounded = pad_to_width("日本語リポジトリ", 7);
+
+        // Assert: every field ends at the same column whatever it holds.
+        assert_eq!(display_width(&wide), 10);
+        assert_eq!(display_width(&narrow), 10);
+        assert_eq!(
+            display_width(&overlong),
+            7,
+            "an odd width leaves one column"
+        );
+        assert_eq!(overlong, "日本語 ");
+        // Padding alone leaves a value that outgrows its column whole, for the
+        // outputs that have no width to keep it inside.
+        assert_eq!(unbounded, "日本語リポジトリ");
+    }
+
+    #[test]
+    fn tui_row_fits_the_terminal_when_the_name_is_wide() {
+        // Arrange
+        let left = format!(
+            "[ ] {} {} ",
+            fit_to_width("🚀日本語リポジトリ", NAME_WIDTH),
+            fit_to_width("Ready", STATUS_WIDTH)
+        );
+        let ascii = format!(
+            "[ ] {} {} ",
+            fit_to_width("ascii-repo", NAME_WIDTH),
+            fit_to_width("Ready", STATUS_WIDTH)
+        );
+
+        // Act
+        let rows: Vec<_> = [80, 100, 120]
+            .map(|width| {
+                (
+                    width,
+                    tui_row(&left, "/w/repo", &cells(), width),
+                    tui_row(&ascii, "/w/repo", &cells(), width),
+                )
+            })
+            .into_iter()
+            .collect();
+
+        // Assert
+        for (width, wide_row, ascii_row) in rows {
+            assert!(display_width(&wide_row) <= width, "{width}: {wide_row}");
+            assert!(wide_row.contains("3 weeks behind"), "{width}: {wide_row}");
+            // Both rows put the difference in the same column, so the list
+            // reads down the page.
+            assert_eq!(
+                display_width(&wide_row),
+                display_width(&ascii_row),
+                "{width}: a wide name shifts the row"
+            );
+        }
+    }
+
+    #[test]
     fn tui_row_makes_room_for_a_difference_past_the_usual_width() {
-        // Arrange: commit dates are arbitrary, so the gap has no upper bound.
+        // Arrange: commit dates are arbitrary, so the gap has no upper bound,
+        // and this label is 22 columns against a 21 column reservation.
         let cells = CommitCells {
             local: "0999-01-01 00:00".into(),
             remote: "2026-01-01 00:00".into(),
@@ -753,12 +920,17 @@ mod tests {
         };
         let left = "[ ] repository       Ready          ";
 
-        // Act
-        let row = tui_row(left, "/Users/example/workspace/repository", &cells, 50);
+        // Act: at every width, not only the one that reaches the last resort.
+        let rows: Vec<_> = [130, 100, 80, 50]
+            .map(|width| (width, tui_row(left, "/w/repository", &cells, width)))
+            .into_iter()
+            .collect();
 
         // Assert
-        assert!(row.ends_with("diverged by 1027 years"));
-        assert_eq!(row.chars().count(), 50);
+        for (width, row) in rows {
+            assert!(row.ends_with("diverged by 1027 years"), "{width}: {row}");
+            assert!(display_width(&row) <= width, "{width}: {row}");
+        }
     }
 
     #[test]

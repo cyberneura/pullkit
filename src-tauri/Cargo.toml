@@ -16,3 +16,5 @@ crossterm = "0.29"
 pullkit-core = { path = "../crates/pullkit-core" }
 serde.workspace = true
 tauri = { version = "2", features = [] }
+unicode-segmentation.workspace = true
+unicode-width.workspace = true

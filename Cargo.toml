@@ -11,4 +11,6 @@ license = "MIT"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
 

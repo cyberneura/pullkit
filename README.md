@@ -34,7 +34,9 @@ the dates supply the size of the gap: `up to date`, `2 days behind`, `3 hours ah
 The terminal interface and the GUI show the list immediately with `fetching...` placeholders
 and update each row as its fetch completes; the table printed to a pipe waits for every
 repository instead. A terminal too narrow to hold everything gives up the path first, then the
-remote date, then the local date; the difference is never cut off. Eight repositories are fetched at a time, and a `git fetch` that has not
+remote date, then the local date; the difference is never cut off. Columns are measured in
+terminal cells, so a repository named with an emoji or with Japanese lines up with the rest,
+and a name cut short at the column edge never leaves half an emoji behind. Eight repositories are fetched at a time, and a `git fetch` that has not
 finished within 60 seconds is killed, on Unix together with the helpers it started. Within one
 pullkit, the `git fetch` of a list and the `git pull` of a sync never run at the same time in
 one repository, even where two entries share a repository because a directory sits inside
