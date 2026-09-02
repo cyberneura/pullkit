@@ -488,8 +488,11 @@ fn tui_row(left: &str, path: &str, cells: &CommitCells, width: usize) -> String 
     // Truncating the row would cut the difference off the end, which is the one
     // thing this layout exists to keep. The room set aside is the same on every
     // row rather than the length of this row's own text, so the column stays put
-    // down the list instead of shifting with each label.
-    let Some(left_width) = width.checked_sub(DIFFERENCE_WIDTH + 1) else {
+    // down the list instead of shifting with each label. A label longer than the
+    // usual reservation still gets the room it needs, or the row would run past
+    // the edge and wrap onto the next one.
+    let reserved = DIFFERENCE_WIDTH.max(cells.difference.chars().count());
+    let Some(left_width) = width.checked_sub(reserved + 1) else {
         return truncate_line(&cells.difference, width);
     };
     let left = truncate_line(left, left_width);
@@ -738,6 +741,24 @@ mod tests {
             remote: "2026-09-01 22:04".into(),
             difference: "3 weeks behind".into(),
         }
+    }
+
+    #[test]
+    fn tui_row_makes_room_for_a_difference_past_the_usual_width() {
+        // Arrange: commit dates are arbitrary, so the gap has no upper bound.
+        let cells = CommitCells {
+            local: "0999-01-01 00:00".into(),
+            remote: "2026-01-01 00:00".into(),
+            difference: "diverged by 1027 years".into(),
+        };
+        let left = "[ ] repository       Ready          ";
+
+        // Act
+        let row = tui_row(left, "/Users/example/workspace/repository", &cells, 50);
+
+        // Assert
+        assert!(row.ends_with("diverged by 1027 years"));
+        assert_eq!(row.chars().count(), 50);
     }
 
     #[test]
