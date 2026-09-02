@@ -129,7 +129,7 @@ fn print_repo_list(repos: &[RepoConfig]) {
     let mut commits: Vec<Option<RepoCommits>> = vec![None; repos.len()];
     inspect_commits_parallel(repos, |index, item| commits[index] = Some(item));
     println!(
-        "{:<20} {:<8} {:<12} {:<8} {:<16} {:<16} {:<DIFFERENCE_WIDTH$} PATH",
+        "{:<20} {:<8} {:<12} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} PATH",
         "REPOSITORY", "TREE", "BRANCH", "ON MAIN", "LOCAL COMMIT", "REMOTE COMMIT", "DIFFERENCE"
     );
     for (status, commits) in statuses.iter().zip(&commits) {
@@ -152,6 +152,7 @@ fn spawn_commit_inspection(repos: &[RepoConfig]) -> Receiver<(usize, RepoCommits
 
 /// Wide enough for the longest label, `diverged by 12 months`.
 const DIFFERENCE_WIDTH: usize = 21;
+const DATE_WIDTH: usize = 16;
 
 struct CommitCells {
     local: String,
@@ -379,10 +380,11 @@ fn draw_tui(
     let header = tui_row(
         &format!("    {:<20} {:<14} ", "REPOSITORY", "STATUS"),
         "PATH",
-        &format!(
-            "{:<16}  {:<16}  {:<DIFFERENCE_WIDTH$}",
-            "LOCAL COMMIT", "REMOTE COMMIT", "DIFFERENCE"
-        ),
+        &CommitCells {
+            local: "LOCAL COMMIT".into(),
+            remote: "REMOTE COMMIT".into(),
+            difference: "DIFFERENCE".into(),
+        },
         width,
     );
     queue!(
@@ -421,14 +423,10 @@ fn draw_tui(
         queue!(stdout, SetForegroundColor(tui_status_color(status)))?;
 
         let checkbox = if state.selected[index] { "[x]" } else { "[ ]" };
-        let cells = commit_cells(commits[index].as_ref());
         let line = tui_row(
             &format!("{checkbox} {:<20} {:<14} ", status.name, tui_status(status)),
             &status.path.display().to_string(),
-            &format!(
-                "{:<16}  {:<16}  {:<DIFFERENCE_WIDTH$}",
-                cells.local, cells.remote, cells.difference
-            ),
+            &commit_cells(commits[index].as_ref()),
             width,
         );
         queue!(
@@ -456,16 +454,49 @@ fn draw_tui(
 }
 
 /// Lays out `left`, a path that absorbs the remaining width, and the commit
-/// columns aligned to the right edge. The path is dropped on narrow terminals.
-fn tui_row(left: &str, path: &str, commit_columns: &str, width: usize) -> String {
+/// columns against the right edge.
+///
+/// A narrow terminal cannot hold all of it, so things are given up in order of
+/// how little they are missed: the path first, then the remote date, then the
+/// local date. The difference is never given up, because it is the answer the
+/// list exists to give; cutting it off would leave `up t` where `up to date`
+/// belongs.
+fn tui_row(left: &str, path: &str, cells: &CommitCells, width: usize) -> String {
     const MIN_PATH_WIDTH: usize = 8;
-    let fixed = left.chars().count() + commit_columns.chars().count() + 2;
-    if width < fixed + MIN_PATH_WIDTH {
-        return truncate_line(&format!("{left}{commit_columns}"), width);
+    let difference = format!("{:<DIFFERENCE_WIDTH$}", cells.difference);
+    let candidates = [
+        format!(
+            "{:<DATE_WIDTH$}  {:<DATE_WIDTH$}  {difference}",
+            cells.local, cells.remote
+        ),
+        format!("{:<DATE_WIDTH$}  {difference}", cells.local),
+        difference.clone(),
+    ];
+
+    for columns in &candidates {
+        let fixed = left.chars().count() + columns.chars().count() + 2;
+        if width >= fixed + MIN_PATH_WIDTH {
+            let path_width = width - fixed;
+            let path = truncate_line(path, path_width);
+            return format!("{left}{path:<path_width$}  {columns}");
+        }
+        if width >= left.chars().count() + columns.chars().count() {
+            return format!("{left}{columns}");
+        }
     }
-    let path_width = width - fixed;
-    let path = truncate_line(path, path_width);
-    format!("{left}{path:<path_width$}  {commit_columns}")
+    // Nothing on the right is left to give up, so the left side yields instead.
+    // Truncating the row would cut the difference off the end, which is the one
+    // thing this layout exists to keep. The room set aside is the same on every
+    // row rather than the length of this row's own text, so the column stays put
+    // down the list instead of shifting with each label. A label longer than the
+    // usual reservation still gets the room it needs, or the row would run past
+    // the edge and wrap onto the next one.
+    let reserved = DIFFERENCE_WIDTH.max(cells.difference.chars().count());
+    let Some(left_width) = width.checked_sub(reserved + 1) else {
+        return truncate_line(&cells.difference, width);
+    };
+    let left = truncate_line(left, left_width);
+    format!("{left:<left_width$} {}", cells.difference)
 }
 
 fn tui_status(status: &RepoStatus) -> String {
@@ -529,7 +560,7 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
     let cells = commit_cells(commits);
     if let Some(error) = &status.error {
         println!(
-            "{:<20} {:<8} {:<12} {:<8} {:<16} {:<16} {:<DIFFERENCE_WIDTH$} {} ({error})",
+            "{:<20} {:<8} {:<12} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {} ({error})",
             status.name,
             "error",
             "-",
@@ -541,7 +572,7 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
         );
     } else {
         println!(
-            "{:<20} {:<8} {:<12} {:<8} {:<16} {:<16} {:<DIFFERENCE_WIDTH$} {}",
+            "{:<20} {:<8} {:<12} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {}",
             status.name,
             if status.clean { "clean" } else { "dirty" },
             status.branch.as_deref().unwrap_or("-"),
@@ -704,21 +735,72 @@ mod tests {
         assert!(token.is_ok());
     }
 
+    fn cells() -> CommitCells {
+        CommitCells {
+            local: "2026-08-10 11:19".into(),
+            remote: "2026-09-01 22:04".into(),
+            difference: "3 weeks behind".into(),
+        }
+    }
+
     #[test]
-    fn tui_row_aligns_commit_columns_to_the_right_edge() {
-        // Arrange
-        let left = "[ ] name ";
-        let columns = "LOCAL  REMOTE  DIFF";
+    fn tui_row_makes_room_for_a_difference_past_the_usual_width() {
+        // Arrange: commit dates are arbitrary, so the gap has no upper bound.
+        let cells = CommitCells {
+            local: "0999-01-01 00:00".into(),
+            remote: "2026-01-01 00:00".into(),
+            difference: "diverged by 1027 years".into(),
+        };
+        let left = "[ ] repository       Ready          ";
 
         // Act
-        let wide = tui_row(left, "/very/long/path/to/repository", columns, 60);
-        let narrow = tui_row(left, "/very/long/path/to/repository", columns, 30);
+        let row = tui_row(left, "/Users/example/workspace/repository", &cells, 50);
 
         // Assert
-        assert_eq!(wide.chars().count(), 60);
-        assert!(wide.starts_with("[ ] name /very/long/path/to/repository"));
-        assert!(wide.ends_with("  LOCAL  REMOTE  DIFF"));
-        assert_eq!(narrow, "[ ] name LOCAL  REMOTE  DIFF");
+        assert!(row.ends_with("diverged by 1027 years"));
+        assert_eq!(row.chars().count(), 50);
+    }
+
+    #[test]
+    fn tui_row_keeps_the_difference_whatever_the_width_is() {
+        // Arrange
+        let left = "[ ] repository       Ready          ";
+        let path = "/Users/example/workspace/repository";
+
+        // Act
+        let wide = tui_row(left, path, &cells(), 130);
+        let medium = tui_row(left, path, &cells(), 100);
+        let narrow = tui_row(left, path, &cells(), 80);
+        let tiny = tui_row(left, path, &cells(), 60);
+        let cramped = tui_row(left, path, &cells(), 50);
+        let absurd = tui_row(left, path, &cells(), 10);
+
+        // Assert: the difference reads in full at every usable width.
+        for row in [&wide, &medium, &narrow, &tiny, &cramped] {
+            assert!(row.contains("3 weeks behind"), "{row}");
+        }
+        // Narrower than the difference itself, there is nothing left to protect.
+        assert_eq!(absurd, "3 weeks be");
+        // The name survives as far as it fits; the status is what goes.
+        assert!(cramped.starts_with("[ ] repository"));
+        // The path goes first, then the remote date, then the local date.
+        assert!(wide.contains("/Users/example"));
+        assert!(wide.contains("2026-08-10 11:19") && wide.contains("2026-09-01 22:04"));
+        assert!(!medium.contains("/Users/example"));
+        assert!(medium.contains("2026-08-10 11:19") && medium.contains("2026-09-01 22:04"));
+        assert!(narrow.contains("2026-08-10 11:19") && !narrow.contains("2026-09-01 22:04"));
+        assert!(!tiny.contains("2026-08-10 11:19"));
+        // Nothing overflows the terminal.
+        for (row, width) in [
+            (&wide, 130),
+            (&medium, 100),
+            (&narrow, 80),
+            (&tiny, 60),
+            (&cramped, 50),
+            (&absurd, 10),
+        ] {
+            assert!(row.chars().count() <= width, "{width}: {row}");
+        }
     }
 
     #[test]
