@@ -132,9 +132,9 @@ fn print_repo_list(repos: &[RepoConfig]) {
     inspect_commits_parallel(repos, |index, item| commits[index] = Some(item));
     println!(
         "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} PATH",
-        pad_to_width("REPOSITORY", NAME_WIDTH),
+        fit_to_width("REPOSITORY", NAME_WIDTH),
         "TREE",
-        pad_to_width("BRANCH", BRANCH_WIDTH),
+        fit_to_width("BRANCH", BRANCH_WIDTH),
         "ON MAIN",
         "LOCAL COMMIT",
         "REMOTE COMMIT",
@@ -391,8 +391,8 @@ fn draw_tui(
     let header = tui_row(
         &format!(
             "    {} {} ",
-            pad_to_width("REPOSITORY", NAME_WIDTH),
-            pad_to_width("STATUS", STATUS_WIDTH)
+            fit_to_width("REPOSITORY", NAME_WIDTH),
+            fit_to_width("STATUS", STATUS_WIDTH)
         ),
         "PATH",
         &CommitCells {
@@ -441,8 +441,8 @@ fn draw_tui(
         let line = tui_row(
             &format!(
                 "{checkbox} {} {} ",
-                pad_to_width(&status.name, NAME_WIDTH),
-                pad_to_width(&tui_status(status), STATUS_WIDTH)
+                fit_to_width(&status.name, NAME_WIDTH),
+                fit_to_width(&tui_status(status), STATUS_WIDTH)
             ),
             &status.path.display().to_string(),
             &commit_cells(commits[index].as_ref()),
@@ -486,10 +486,10 @@ fn tui_row(left: &str, path: &str, cells: &CommitCells, width: usize) -> String 
     let candidates = [
         format!(
             "{}  {}  {difference}",
-            pad_to_width(&cells.local, DATE_WIDTH),
-            pad_to_width(&cells.remote, DATE_WIDTH)
+            fit_to_width(&cells.local, DATE_WIDTH),
+            fit_to_width(&cells.remote, DATE_WIDTH)
         ),
-        format!("{}  {difference}", pad_to_width(&cells.local, DATE_WIDTH)),
+        format!("{}  {difference}", fit_to_width(&cells.local, DATE_WIDTH)),
         difference.clone(),
     ];
 
@@ -497,7 +497,7 @@ fn tui_row(left: &str, path: &str, cells: &CommitCells, width: usize) -> String 
         let fixed = display_width(left) + display_width(columns) + 2;
         if width >= fixed + MIN_PATH_WIDTH {
             let path_width = width - fixed;
-            return format!("{left}{}  {columns}", pad_to_width(path, path_width));
+            return format!("{left}{}  {columns}", fit_to_width(path, path_width));
         }
         if width >= display_width(left) + display_width(columns) {
             return format!("{left}{columns}");
@@ -514,7 +514,7 @@ fn tui_row(left: &str, path: &str, cells: &CommitCells, width: usize) -> String 
     let Some(left_width) = width.checked_sub(reserved + 1) else {
         return truncate_to_width(&cells.difference, width);
     };
-    format!("{} {}", pad_to_width(left, left_width), cells.difference)
+    format!("{} {}", fit_to_width(left, left_width), cells.difference)
 }
 
 fn tui_status(status: &RepoStatus) -> String {
@@ -581,12 +581,19 @@ fn truncate_to_width(text: &str, width: usize) -> String {
     kept
 }
 
-/// Cuts the text to `width` columns and fills what is left with spaces, which
-/// `{:<width$}` cannot do because it counts scalars.
+/// Fills the text out to `width` columns, and leaves it alone when it already
+/// runs past them. For the last column on a row, where there is nothing to keep
+/// the text clear of and cutting it would lose what the row is there to say.
 fn pad_to_width(text: &str, width: usize) -> String {
-    let kept = truncate_to_width(text, width);
-    let padding = width - display_width(&kept);
-    format!("{kept}{}", " ".repeat(padding))
+    let padding = width.saturating_sub(display_width(text));
+    format!("{text}{}", " ".repeat(padding))
+}
+
+/// Cuts the text to `width` columns and fills what is left with spaces, so the
+/// next column starts where it does on every other row. `{:<width$}` cannot do
+/// this, because it counts scalars.
+fn fit_to_width(text: &str, width: usize) -> String {
+    pad_to_width(&truncate_to_width(text, width), width)
 }
 
 fn select_repos(repos: &[RepoConfig], only: &[String]) -> Result<Vec<RepoConfig>> {
@@ -612,9 +619,9 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
     if let Some(error) = &status.error {
         println!(
             "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {} ({error})",
-            pad_to_width(&status.name, NAME_WIDTH),
+            fit_to_width(&status.name, NAME_WIDTH),
             "error",
-            pad_to_width("-", BRANCH_WIDTH),
+            fit_to_width("-", BRANCH_WIDTH),
             "-",
             cells.local,
             cells.remote,
@@ -624,9 +631,9 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
     } else {
         println!(
             "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {}",
-            pad_to_width(&status.name, NAME_WIDTH),
+            fit_to_width(&status.name, NAME_WIDTH),
             if status.clean { "clean" } else { "dirty" },
-            pad_to_width(status.branch.as_deref().unwrap_or("-"), BRANCH_WIDTH),
+            fit_to_width(status.branch.as_deref().unwrap_or("-"), BRANCH_WIDTH),
             if status.on_main { "yes" } else { "no" },
             cells.local,
             cells.remote,
@@ -641,7 +648,7 @@ fn print_summary(results: &[SyncResult]) {
     for result in results {
         println!(
             "  {} {:<16} {}",
-            pad_to_width(&result.name, NAME_WIDTH),
+            fit_to_width(&result.name, NAME_WIDTH),
             format!("{:?}", result.outcome).to_lowercase(),
             result.message
         );
@@ -840,9 +847,9 @@ mod tests {
     #[test]
     fn padding_fills_the_columns_a_wide_name_leaves() {
         // Arrange & Act
-        let wide = pad_to_width("日本語", 10);
-        let narrow = pad_to_width("repo", 10);
-        let overlong = pad_to_width("日本語リポジトリ", 7);
+        let wide = fit_to_width("日本語", 10);
+        let narrow = fit_to_width("repo", 10);
+        let overlong = fit_to_width("日本語リポジトリ", 7);
 
         // Assert: every field ends at the same column whatever it holds.
         assert_eq!(display_width(&wide), 10);
@@ -860,13 +867,13 @@ mod tests {
         // Arrange
         let left = format!(
             "[ ] {} {} ",
-            pad_to_width("🚀日本語リポジトリ", NAME_WIDTH),
-            pad_to_width("Ready", STATUS_WIDTH)
+            fit_to_width("🚀日本語リポジトリ", NAME_WIDTH),
+            fit_to_width("Ready", STATUS_WIDTH)
         );
         let ascii = format!(
             "[ ] {} {} ",
-            pad_to_width("ascii-repo", NAME_WIDTH),
-            pad_to_width("Ready", STATUS_WIDTH)
+            fit_to_width("ascii-repo", NAME_WIDTH),
+            fit_to_width("Ready", STATUS_WIDTH)
         );
 
         // Act
@@ -897,7 +904,8 @@ mod tests {
 
     #[test]
     fn tui_row_makes_room_for_a_difference_past_the_usual_width() {
-        // Arrange: commit dates are arbitrary, so the gap has no upper bound.
+        // Arrange: commit dates are arbitrary, so the gap has no upper bound,
+        // and this label is 22 columns against a 21 column reservation.
         let cells = CommitCells {
             local: "0999-01-01 00:00".into(),
             remote: "2026-01-01 00:00".into(),
@@ -905,12 +913,17 @@ mod tests {
         };
         let left = "[ ] repository       Ready          ";
 
-        // Act
-        let row = tui_row(left, "/Users/example/workspace/repository", &cells, 50);
+        // Act: at every width, not only the one that reaches the last resort.
+        let rows: Vec<_> = [130, 100, 80, 50]
+            .map(|width| (width, tui_row(left, "/w/repository", &cells, width)))
+            .into_iter()
+            .collect();
 
         // Assert
-        assert!(row.ends_with("diverged by 1027 years"));
-        assert_eq!(row.chars().count(), 50);
+        for (width, row) in rows {
+            assert!(row.ends_with("diverged by 1027 years"), "{width}: {row}");
+            assert!(display_width(&row) <= width, "{width}: {row}");
+        }
     }
 
     #[test]
