@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
         Arc, Mutex, MutexGuard, OnceLock,
     },
@@ -255,9 +256,16 @@ static REPO_LOCKS: OnceLock<RepoLocks> = OnceLock::new();
 /// timeout dies with this process.
 static RUNNING_FETCHES: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
-/// Kills the background fetches that have not finished. Call it on the way out
-/// of a list, before this process exits.
+/// Set while a list is being abandoned, so that the workers stop taking jobs.
+/// Killing only what is running would not be enough with more repositories than
+/// workers: a worker whose fetch was killed would go on to start the next one.
+static ABANDONED: AtomicBool = AtomicBool::new(false);
+
+/// Stops the inspection of a list: no further fetch is started, and the ones
+/// already running are killed. Call it on the way out, before this process
+/// exits. A later call to `inspect_commits_parallel` starts afresh.
 pub fn terminate_running_fetches() {
+    ABANDONED.store(true, Ordering::SeqCst);
     let running = std::mem::take(&mut *lock_ignoring_poison(&RUNNING_FETCHES));
     for pid in running {
         kill_process_group(pid);
@@ -341,12 +349,16 @@ where
     }
     drop(job_tx);
     let job_rx = Mutex::new(job_rx);
+    ABANDONED.store(false, Ordering::SeqCst);
 
     thread::scope(|scope| {
         for _ in 0..repos.len().min(MAX_COMMIT_WORKERS) {
             let result_tx = result_tx.clone();
             let job_rx = &job_rx;
             scope.spawn(move || loop {
+                if ABANDONED.load(Ordering::SeqCst) {
+                    return;
+                }
                 let Ok((index, repo)) = lock_ignoring_poison(job_rx).recv() else {
                     return;
                 };
@@ -473,11 +485,16 @@ fn own_process_group(command: &mut Command) {
 #[cfg(windows)]
 fn own_process_group(_command: &mut Command) {}
 
-/// Kills the process group, which `own_process_group` made equal to the child's
-/// own pid, and the child itself in case the group signal did not land.
+/// Kills the command. One given a group of its own is killed by group, so the
+/// helpers it started go with it. One sharing this process's group is killed on
+/// its own: its pid names no group, and signalling the group it is really in
+/// would take pullkit down with it. Its helpers are then left to notice that
+/// git is gone, which is the price of letting Ctrl-C reach it.
 #[cfg(unix)]
-fn kill_group(child: &mut Child) {
-    kill_process_group(child.id());
+fn kill_command(child: &mut Child, isolation: Isolation) {
+    if matches!(isolation, Isolation::OwnGroup) {
+        kill_process_group(child.id());
+    }
     let _ = child.kill();
 }
 
@@ -493,7 +510,7 @@ fn kill_process_group(pid: u32) {
 /// Windows has no process group to signal here, so only the command itself is
 /// stopped and a helper it started can outlive it.
 #[cfg(windows)]
-fn kill_group(child: &mut Child) {
+fn kill_command(child: &mut Child, _isolation: Isolation) {
     let _ = child.kill();
 }
 
@@ -516,7 +533,7 @@ fn reap(child: &mut Child) {
 }
 
 /// Runs the command and kills it once `timeout` elapses, taking the helpers it
-/// started when it has a process group of its own. An unreachable remote would
+/// started when, and only when, it has a process group of its own. An unreachable remote would
 /// otherwise leave `git fetch` waiting for a connection that never completes,
 /// and a list or a sync would wait with it. A killed command yields no output,
 /// and a `git fetch` killed part way through can leave whatever it had already
@@ -544,7 +561,7 @@ fn output_with_timeout(
     let (stdout, stderr) = match pipes {
         Ok(pipes) => pipes,
         Err(error) => {
-            kill_group(&mut child);
+            kill_command(&mut child, isolation);
             reap(&mut child);
             return Err(error);
         }
@@ -559,13 +576,13 @@ fn output_with_timeout(
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
             Ok(None) => {
-                kill_group(&mut child);
+                kill_command(&mut child, isolation);
                 reap(&mut child);
                 forget_running(&child, isolation);
                 return Err(anyhow!("git timed out after {} seconds", timeout.as_secs()));
             }
             Err(error) => {
-                kill_group(&mut child);
+                kill_command(&mut child, isolation);
                 reap(&mut child);
                 forget_running(&child, isolation);
                 return Err(error).context("failed to wait for git");
@@ -1088,7 +1105,7 @@ mod tests {
         thread::sleep(Duration::from_millis(300));
 
         // Act
-        kill_group(&mut child);
+        kill_command(&mut child, Isolation::OwnGroup);
         reap(&mut child);
         thread::sleep(Duration::from_millis(300));
 
