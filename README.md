@@ -40,9 +40,9 @@ one repository, even where two entries share a repository because a directory si
 another entry's work tree. A repository whose remote cannot be read shows `unavailable`, and
 the GUI puts the git error in the row's tooltip.
 
-`GIT_TERMINAL_PROMPT=0` stops git from asking for credentials. Unless `GIT_SSH_COMMAND` or
-the repository's `core.sshCommand` is already set, ssh is run with `BatchMode=yes` so that it
-fails instead of asking as well. A repository that chooses its own ssh command keeps it, but a
+`GIT_TERMINAL_PROMPT=0` stops git from asking for credentials. Unless `GIT_SSH_COMMAND`,
+`GIT_SSH`, or the repository's `core.sshCommand` is already set, ssh is run with
+`BatchMode=yes` so that it fails instead of asking as well. A repository that chooses its own ssh command keeps it, but a
 prompt from that command still never reaches you: the fetch has no terminal it may read, so it
 waits out the 60 second timeout and the row ends up showing `unavailable`.
 
