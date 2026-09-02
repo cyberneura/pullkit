@@ -11,9 +11,9 @@
     "windows": [
       {
         "title": "pullkit",
-        "width": 820,
+        "width": 1080,
         "height": 620,
-        "minWidth": 620,
+        "minWidth": 820,
         "minHeight": 440
       }
     ],

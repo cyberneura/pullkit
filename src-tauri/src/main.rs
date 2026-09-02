@@ -8,12 +8,16 @@ use crossterm::{
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use pullkit_core::{
-    config_path, initialize_config, load_config, sync_repos, RepoConfig, RepoStatus, SyncOutcome,
-    SyncResult, EXAMPLE_CONFIG,
+    config_path, initialize_config, inspect_commits_parallel, load_config, sync_repos, RepoCommits,
+    RepoConfig, RepoStatus, SyncOutcome, SyncResult, EXAMPLE_CONFIG,
 };
+use serde::Serialize;
 use std::{
     collections::HashSet,
     io::{self, IsTerminal, Write},
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::Duration,
 };
 use tauri::Emitter;
 
@@ -121,12 +125,63 @@ fn run_cli(command: Option<CliCommand>) -> Result<()> {
 }
 
 fn print_repo_list(repos: &[RepoConfig]) {
+    let statuses: Vec<_> = repos.iter().map(pullkit_core::inspect).collect();
+    let mut commits: Vec<Option<RepoCommits>> = vec![None; repos.len()];
+    inspect_commits_parallel(repos, |index, item| commits[index] = Some(item));
     println!(
-        "{:<20} {:<8} {:<12} {:<8} PATH",
-        "REPOSITORY", "TREE", "BRANCH", "ON MAIN"
+        "{:<20} {:<8} {:<12} {:<8} {:<16} {:<16} {:<DIFFERENCE_WIDTH$} PATH",
+        "REPOSITORY", "TREE", "BRANCH", "ON MAIN", "LOCAL COMMIT", "REMOTE COMMIT", "DIFFERENCE"
     );
-    for repo in repos {
-        print_status(&pullkit_core::inspect(repo));
+    for (status, commits) in statuses.iter().zip(&commits) {
+        print_status(status, commits.as_ref());
+    }
+}
+
+/// Runs the commit inspection on a background thread so a list can be shown
+/// before the remote fetches finish; results arrive on the returned channel.
+fn spawn_commit_inspection(repos: &[RepoConfig]) -> Receiver<(usize, RepoCommits)> {
+    let (tx, rx) = mpsc::channel();
+    let repos = repos.to_vec();
+    thread::spawn(move || {
+        inspect_commits_parallel(&repos, |index, commits| {
+            let _ = tx.send((index, commits));
+        });
+    });
+    rx
+}
+
+/// Wide enough for the longest label, `diverged by 12 months`.
+const DIFFERENCE_WIDTH: usize = 21;
+
+struct CommitCells {
+    local: String,
+    remote: String,
+    difference: String,
+}
+
+fn commit_cells(commits: Option<&RepoCommits>) -> CommitCells {
+    let Some(commits) = commits else {
+        return CommitCells {
+            local: "-".into(),
+            remote: "-".into(),
+            difference: "fetching...".into(),
+        };
+    };
+    let date = |commit: &Option<pullkit_core::CommitInfo>| {
+        commit
+            .as_ref()
+            .map_or("-".into(), |commit| commit.date.clone())
+    };
+    CommitCells {
+        local: date(&commits.local),
+        remote: date(&commits.remote),
+        difference: commits.difference.clone().unwrap_or_else(|| {
+            if commits.error.is_some() {
+                "unavailable".into()
+            } else {
+                "-".into()
+            }
+        }),
     }
 }
 
@@ -222,31 +277,61 @@ impl Drop for TerminalSession {
 
 fn run_tui(repos: &[RepoConfig]) -> Result<Option<Vec<RepoConfig>>> {
     let statuses: Vec<_> = repos.iter().map(pullkit_core::inspect).collect();
+    let mut commits: Vec<Option<RepoCommits>> = vec![None; repos.len()];
+    let commit_rx = spawn_commit_inspection(repos);
     let mut state = TuiState::new(repos.len());
     let mut terminal = TerminalSession::enter()?;
+    let mut needs_redraw = true;
 
     loop {
-        draw_tui(&mut terminal.stdout, &statuses, &state)?;
-        let Event::Key(key) = event::read()? else {
+        if needs_redraw {
+            let (width, height) = terminal::size()?;
+            draw_tui(
+                &mut terminal.stdout,
+                &statuses,
+                &commits,
+                &state,
+                usize::from(width),
+                height,
+            )?;
+            needs_redraw = false;
+        }
+        while let Ok((index, item)) = commit_rx.try_recv() {
+            commits[index] = Some(item);
+            needs_redraw = true;
+        }
+        if !event::poll(Duration::from_millis(100))? {
             continue;
+        }
+        let key = match event::read()? {
+            Event::Key(key) => key,
+            Event::Resize(..) => {
+                needs_redraw = true;
+                continue;
+            }
+            _ => continue,
         };
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             continue;
         }
 
+        needs_redraw = true;
         match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(leave_tui());
+            }
             KeyCode::Up | KeyCode::Char('k') => state.move_up(),
             KeyCode::Down | KeyCode::Char('j') => state.move_down(),
             KeyCode::Char(' ') => state.toggle_current(&statuses),
             KeyCode::Char('a') => state.toggle_all(&statuses),
             KeyCode::Enter if state.selected_count() > 0 => break,
-            KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
+            KeyCode::Esc | KeyCode::Char('q') => return Ok(leave_tui()),
             _ => {}
         }
     }
 
     drop(terminal);
+    wait_for_commits(&commits, &commit_rx);
     Ok(Some(
         repos
             .iter()
@@ -257,11 +342,49 @@ fn run_tui(repos: &[RepoConfig]) -> Result<Option<Vec<RepoConfig>>> {
     ))
 }
 
-fn draw_tui(stdout: &mut io::Stdout, statuses: &[RepoStatus], state: &TuiState) -> Result<()> {
-    let (width, height) = terminal::size()?;
+/// Quitting would otherwise leave the fetches of the list running: each one has
+/// a process group of its own, so nothing reaches it once this process is gone.
+fn leave_tui() -> Option<Vec<RepoConfig>> {
+    pullkit_core::terminate_running_fetches();
+    None
+}
+
+/// The core takes a per-repository lock, so a sync would block rather than race
+/// with a background fetch. Waiting here instead keeps that from happening
+/// silently, with the terminal already restored and no sign of why nothing is
+/// happening. Every row is waited for, not only the selected ones: a row whose
+/// directory sits inside another row's work tree shares that repository.
+fn wait_for_commits(commits: &[Option<RepoCommits>], commit_rx: &Receiver<(usize, RepoCommits)>) {
+    let mut pending = commits.iter().filter(|item| item.is_none()).count();
+    if pending == 0 {
+        return;
+    }
+    println!("Waiting for the remote inspection to finish...");
+    while pending > 0 && commit_rx.recv().is_ok() {
+        pending -= 1;
+    }
+}
+
+fn draw_tui(
+    stdout: &mut impl Write,
+    statuses: &[RepoStatus],
+    commits: &[Option<RepoCommits>],
+    state: &TuiState,
+    width: usize,
+    height: u16,
+) -> Result<()> {
     let visible_rows = usize::from(height.saturating_sub(4).max(1));
     let first_row = state.cursor.saturating_sub(visible_rows - 1);
 
+    let header = tui_row(
+        &format!("    {:<20} {:<14} ", "REPOSITORY", "STATUS"),
+        "PATH",
+        &format!(
+            "{:<16}  {:<16}  {:<DIFFERENCE_WIDTH$}",
+            "LOCAL COMMIT", "REMOTE COMMIT", "DIFFERENCE"
+        ),
+        width,
+    );
     queue!(
         stdout,
         Clear(ClearType::All),
@@ -270,6 +393,10 @@ fn draw_tui(stdout: &mut io::Stdout, statuses: &[RepoStatus], state: &TuiState) 
         SetAttribute(Attribute::Bold),
         Print("pullkit repositories"),
         SetAttribute(Attribute::Reset),
+        ResetColor,
+        MoveTo(0, 1),
+        SetForegroundColor(Color::DarkGrey),
+        Print(header),
         ResetColor
     )?;
 
@@ -294,15 +421,19 @@ fn draw_tui(stdout: &mut io::Stdout, statuses: &[RepoStatus], state: &TuiState) 
         queue!(stdout, SetForegroundColor(tui_status_color(status)))?;
 
         let checkbox = if state.selected[index] { "[x]" } else { "[ ]" };
-        let line = format!(
-            "{checkbox} {:<20} {:<14} {}",
-            status.name,
-            tui_status(status),
-            status.path.display()
+        let cells = commit_cells(commits[index].as_ref());
+        let line = tui_row(
+            &format!("{checkbox} {:<20} {:<14} ", status.name, tui_status(status)),
+            &status.path.display().to_string(),
+            &format!(
+                "{:<16}  {:<16}  {:<DIFFERENCE_WIDTH$}",
+                cells.local, cells.remote, cells.difference
+            ),
+            width,
         );
         queue!(
             stdout,
-            Print(truncate_line(&line, usize::from(width))),
+            Print(line),
             SetAttribute(Attribute::Reset),
             ResetColor
         )?;
@@ -317,11 +448,24 @@ fn draw_tui(stdout: &mut io::Stdout, statuses: &[RepoStatus], state: &TuiState) 
         MoveTo(0, height.saturating_sub(1)),
         Clear(ClearType::CurrentLine),
         SetForegroundColor(Color::DarkCyan),
-        Print(truncate_line(&footer, usize::from(width))),
+        Print(truncate_line(&footer, width)),
         ResetColor
     )?;
     stdout.flush()?;
     Ok(())
+}
+
+/// Lays out `left`, a path that absorbs the remaining width, and the commit
+/// columns aligned to the right edge. The path is dropped on narrow terminals.
+fn tui_row(left: &str, path: &str, commit_columns: &str, width: usize) -> String {
+    const MIN_PATH_WIDTH: usize = 8;
+    let fixed = left.chars().count() + commit_columns.chars().count() + 2;
+    if width < fixed + MIN_PATH_WIDTH {
+        return truncate_line(&format!("{left}{commit_columns}"), width);
+    }
+    let path_width = width - fixed;
+    let path = truncate_line(path, path_width);
+    format!("{left}{path:<path_width$}  {commit_columns}")
 }
 
 fn tui_status(status: &RepoStatus) -> String {
@@ -381,23 +525,30 @@ fn select_repos(repos: &[RepoConfig], only: &[String]) -> Result<Vec<RepoConfig>
         .collect())
 }
 
-fn print_status(status: &RepoStatus) {
+fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
+    let cells = commit_cells(commits);
     if let Some(error) = &status.error {
         println!(
-            "{:<20} {:<8} {:<12} {:<8} {} ({error})",
+            "{:<20} {:<8} {:<12} {:<8} {:<16} {:<16} {:<DIFFERENCE_WIDTH$} {} ({error})",
             status.name,
             "error",
             "-",
             "-",
+            cells.local,
+            cells.remote,
+            cells.difference,
             status.path.display()
         );
     } else {
         println!(
-            "{:<20} {:<8} {:<12} {:<8} {}",
+            "{:<20} {:<8} {:<12} {:<8} {:<16} {:<16} {:<DIFFERENCE_WIDTH$} {}",
             status.name,
             if status.clean { "clean" } else { "dirty" },
             status.branch.as_deref().unwrap_or("-"),
             if status.on_main { "yes" } else { "no" },
+            cells.local,
+            cells.remote,
+            cells.difference,
             status.path.display()
         );
     }
@@ -421,11 +572,42 @@ fn list_repos() -> Result<Vec<RepoStatus>, String> {
     Ok(config.repos.iter().map(pullkit_core::inspect).collect())
 }
 
+/// The page seeds this from `Date.now()`, so it has to hold milliseconds since
+/// 1970, not just a counter.
+type InspectionToken = u64;
+
+#[derive(Clone, Serialize)]
+struct CommitEvent {
+    token: InspectionToken,
+    commits: RepoCommits,
+}
+
+/// Inspects every repository on the core worker pool and emits one event per
+/// result, so the window fills its rows in as the fetches finish. `token`
+/// comes back on every event so the page can discard a superseded run.
+#[tauri::command]
+async fn inspect_all_commits(app: tauri::AppHandle, token: InspectionToken) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = load_config().map_err(|error| format!("{error:#}"))?;
+        inspect_commits_parallel(&config.repos, |_, commits| {
+            let _ = app.emit("commit-inspected", CommitEvent { token, commits });
+        });
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn sync_selected(
     app: tauri::AppHandle,
     names: Vec<String>,
 ) -> Result<Vec<SyncResult>, String> {
+    if names.is_empty() {
+        // `select_repos` reads an empty list as "every repository", which is the
+        // CLI's contract for `--only`, never what an empty selection means here.
+        return Err("no repositories were selected".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let config = load_config().map_err(|error| format!("{error:#}"))?;
         let repos = select_repos(&config.repos, &names).map_err(|error| format!("{error:#}"))?;
@@ -440,7 +622,16 @@ async fn sync_selected(
 
 fn run_gui() -> Result<()> {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![list_repos, sync_selected])
+        .on_window_event(|_window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                pullkit_core::terminate_running_fetches();
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            list_repos,
+            inspect_all_commits,
+            sync_selected
+        ])
         .run(tauri::generate_context!())?;
     Ok(())
 }
@@ -460,6 +651,74 @@ mod tests {
             on_main: true,
             error: None,
         }
+    }
+
+    fn rendered_tui(commits: &[Option<RepoCommits>]) -> String {
+        let statuses = vec![status("pullkit", true)];
+        let state = TuiState::new(statuses.len());
+        let mut buffer = Vec::new();
+        draw_tui(&mut buffer, &statuses, commits, &state, 120, 10).unwrap();
+        String::from_utf8(buffer).unwrap()
+    }
+
+    #[test]
+    fn tui_shows_placeholders_until_commit_inspection_arrives() {
+        // Arrange
+        let commits = RepoCommits {
+            name: "pullkit".into(),
+            path: PathBuf::from("pullkit"),
+            local: Some(pullkit_core::CommitInfo {
+                sha: "a".repeat(40),
+                timestamp: 1_000_000,
+                date: "2026-09-01 09:30".into(),
+            }),
+            remote: Some(pullkit_core::CommitInfo {
+                sha: "b".repeat(40),
+                timestamp: 1_000_000 + 2 * 86_400,
+                date: "2026-09-03 09:30".into(),
+            }),
+            difference: Some("2 days behind".into()),
+            error: None,
+        };
+
+        // Act
+        let pending = rendered_tui(&[None]);
+        let resolved = rendered_tui(&[Some(commits)]);
+
+        // Assert
+        assert!(pending.contains("LOCAL COMMIT"));
+        assert!(pending.contains("fetching..."));
+        assert!(resolved.contains("2026-09-01 09:30  2026-09-03 09:30  2 days behind"));
+        assert!(!resolved.contains("fetching..."));
+    }
+
+    #[test]
+    fn inspection_token_holds_a_javascript_timestamp() {
+        // Arrange: what `Date.now()` returns, which the page uses as its seed.
+        let milliseconds_since_1970: i64 = 1_788_323_990_678;
+
+        // Act
+        let token = InspectionToken::try_from(milliseconds_since_1970);
+
+        // Assert: a narrower type makes every invoke fail before the command runs.
+        assert!(token.is_ok());
+    }
+
+    #[test]
+    fn tui_row_aligns_commit_columns_to_the_right_edge() {
+        // Arrange
+        let left = "[ ] name ";
+        let columns = "LOCAL  REMOTE  DIFF";
+
+        // Act
+        let wide = tui_row(left, "/very/long/path/to/repository", columns, 60);
+        let narrow = tui_row(left, "/very/long/path/to/repository", columns, 30);
+
+        // Assert
+        assert_eq!(wide.chars().count(), 60);
+        assert!(wide.starts_with("[ ] name /very/long/path/to/repository"));
+        assert!(wide.ends_with("  LOCAL  REMOTE  DIFF"));
+        assert_eq!(narrow, "[ ] name LOCAL  REMOTE  DIFF");
     }
 
     #[test]
