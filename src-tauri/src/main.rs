@@ -126,15 +126,18 @@ fn run_cli(command: Option<CliCommand>) -> Result<()> {
     }
 }
 
+/// Nothing bounds the width of a pipe, so the columns here are padded and never
+/// cut: two repositories that share their first twenty columns must not come
+/// out looking like the same one.
 fn print_repo_list(repos: &[RepoConfig]) {
     let statuses: Vec<_> = repos.iter().map(pullkit_core::inspect).collect();
     let mut commits: Vec<Option<RepoCommits>> = vec![None; repos.len()];
     inspect_commits_parallel(repos, |index, item| commits[index] = Some(item));
     println!(
         "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} PATH",
-        fit_to_width("REPOSITORY", NAME_WIDTH),
+        pad_to_width("REPOSITORY", NAME_WIDTH),
         "TREE",
-        fit_to_width("BRANCH", BRANCH_WIDTH),
+        pad_to_width("BRANCH", BRANCH_WIDTH),
         "ON MAIN",
         "LOCAL COMMIT",
         "REMOTE COMMIT",
@@ -619,9 +622,9 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
     if let Some(error) = &status.error {
         println!(
             "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {} ({error})",
-            fit_to_width(&status.name, NAME_WIDTH),
+            pad_to_width(&status.name, NAME_WIDTH),
             "error",
-            fit_to_width("-", BRANCH_WIDTH),
+            pad_to_width("-", BRANCH_WIDTH),
             "-",
             cells.local,
             cells.remote,
@@ -631,9 +634,9 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
     } else {
         println!(
             "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {}",
-            fit_to_width(&status.name, NAME_WIDTH),
+            pad_to_width(&status.name, NAME_WIDTH),
             if status.clean { "clean" } else { "dirty" },
-            fit_to_width(status.branch.as_deref().unwrap_or("-"), BRANCH_WIDTH),
+            pad_to_width(status.branch.as_deref().unwrap_or("-"), BRANCH_WIDTH),
             if status.on_main { "yes" } else { "no" },
             cells.local,
             cells.remote,
@@ -648,7 +651,7 @@ fn print_summary(results: &[SyncResult]) {
     for result in results {
         println!(
             "  {} {:<16} {}",
-            fit_to_width(&result.name, NAME_WIDTH),
+            pad_to_width(&result.name, NAME_WIDTH),
             format!("{:?}", result.outcome).to_lowercase(),
             result.message
         );
@@ -850,6 +853,7 @@ mod tests {
         let wide = fit_to_width("日本語", 10);
         let narrow = fit_to_width("repo", 10);
         let overlong = fit_to_width("日本語リポジトリ", 7);
+        let unbounded = pad_to_width("日本語リポジトリ", 7);
 
         // Assert: every field ends at the same column whatever it holds.
         assert_eq!(display_width(&wide), 10);
@@ -860,6 +864,9 @@ mod tests {
             "an odd width leaves one column"
         );
         assert_eq!(overlong, "日本語 ");
+        // Padding alone leaves a value that outgrows its column whole, for the
+        // outputs that have no width to keep it inside.
+        assert_eq!(unbounded, "日本語リポジトリ");
     }
 
     #[test]
