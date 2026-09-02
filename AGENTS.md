@@ -32,6 +32,11 @@ node --check ui/main.js      # JS の構文検査 (ビルド工程が無いの�
 **Rust の E2E 前に必ず `cargo build` する。** `cargo test` / `cargo clippy` は
 `target/debug/pullkit` を再リンクしないので、修正後に build せず実バイナリを触ると旧挙動を見る。
 
+**挙動を変えたら `cargo build --release` も実行する。** PATH の `pullkit` は
+`~/home-files/bin/pullkit` → `target/release/pullkit` のシンボリックリンクなので、
+release を作り直さないと、ユーザーが打つ `pullkit` は古いままになる。debug ビルドだけで
+検証を済ませると、この食い違いに気づけない。
+
 ### TUI
 
 Tauri の GUI ウィンドウはブラウザで確認できないが、TUI は pty 経由で実画面を取れる。

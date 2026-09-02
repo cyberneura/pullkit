@@ -484,10 +484,16 @@ fn tui_row(left: &str, path: &str, cells: &CommitCells, width: usize) -> String 
             return format!("{left}{columns}");
         }
     }
-    truncate_line(
-        &format!("{left}{}", candidates[candidates.len() - 1]),
-        width,
-    )
+    // Nothing on the right is left to give up, so the left side yields instead.
+    // Truncating the row would cut the difference off the end, which is the one
+    // thing this layout exists to keep. The room set aside is the same on every
+    // row rather than the length of this row's own text, so the column stays put
+    // down the list instead of shifting with each label.
+    let Some(left_width) = width.checked_sub(DIFFERENCE_WIDTH + 1) else {
+        return truncate_line(&cells.difference, width);
+    };
+    let left = truncate_line(left, left_width);
+    format!("{left:<left_width$} {}", cells.difference)
 }
 
 fn tui_status(status: &RepoStatus) -> String {
@@ -745,11 +751,17 @@ mod tests {
         let medium = tui_row(left, path, &cells(), 100);
         let narrow = tui_row(left, path, &cells(), 80);
         let tiny = tui_row(left, path, &cells(), 60);
+        let cramped = tui_row(left, path, &cells(), 50);
+        let absurd = tui_row(left, path, &cells(), 10);
 
-        // Assert: the difference reads in full at every width.
-        for row in [&wide, &medium, &narrow, &tiny] {
+        // Assert: the difference reads in full at every usable width.
+        for row in [&wide, &medium, &narrow, &tiny, &cramped] {
             assert!(row.contains("3 weeks behind"), "{row}");
         }
+        // Narrower than the difference itself, there is nothing left to protect.
+        assert_eq!(absurd, "3 weeks be");
+        // The name survives as far as it fits; the status is what goes.
+        assert!(cramped.starts_with("[ ] repository"));
         // The path goes first, then the remote date, then the local date.
         assert!(wide.contains("/Users/example"));
         assert!(wide.contains("2026-08-10 11:19") && wide.contains("2026-09-01 22:04"));
@@ -758,7 +770,14 @@ mod tests {
         assert!(narrow.contains("2026-08-10 11:19") && !narrow.contains("2026-09-01 22:04"));
         assert!(!tiny.contains("2026-08-10 11:19"));
         // Nothing overflows the terminal.
-        for (row, width) in [(&wide, 130), (&medium, 100), (&narrow, 80), (&tiny, 60)] {
+        for (row, width) in [
+            (&wide, 130),
+            (&medium, 100),
+            (&narrow, 80),
+            (&tiny, 60),
+            (&cramped, 50),
+            (&absurd, 10),
+        ] {
             assert!(row.chars().count() <= width, "{width}: {row}");
         }
     }
