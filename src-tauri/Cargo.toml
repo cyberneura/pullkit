@@ -6,7 +6,6 @@ license.workspace = true
 description = "Keep a configured set of Git repositories up to date"
 
 [build-dependencies]
-png = "0.17"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
@@ -21,3 +20,12 @@ unicode-width.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
+
+# What ships is a bare binary rather than an .app, so macOS has no Info.plist to
+# read an icon out of and gives the process the generic executable icon. Setting
+# it on NSApplication at startup is the only way to put a real one in the Dock.
+# These are already in the tree as Tauri's own dependencies.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3", features = ["NSData"] }
