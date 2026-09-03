@@ -904,6 +904,10 @@ async fn sync_selected(
 /// own close reaches the exit as well.
 fn run_gui() -> Result<()> {
     tauri::Builder::default()
+        .setup(|_app| {
+            set_dock_icon();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_repos,
             inspect_all_commits,
@@ -917,6 +921,39 @@ fn run_gui() -> Result<()> {
         });
     Ok(())
 }
+
+/// Puts the application icon in the Dock.
+///
+/// A bundled app carries its icon in the .app and needs none of this, but what
+/// ships here is a bare binary: macOS finds no Info.plist, and the Dock falls
+/// back to the generic executable tile. The icon is the same file a bundle
+/// would use, compiled in so that it travels with the binary.
+///
+/// Anything short of setting it is ignored rather than reported: an icon is
+/// decoration, and a window that opens without one beats no window at all.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData};
+
+    // setup runs on the main thread, which is where AppKit insists this happen.
+    let Some(marker) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(include_bytes!("../icons/icon.png"));
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        return;
+    };
+    // Unsafe only in that AppKit is: the marker already proves the thread, and
+    // the image is one this function just built.
+    unsafe {
+        NSApplication::sharedApplication(marker).setApplicationIconImage(Some(&image));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_dock_icon() {}
 
 #[cfg(test)]
 mod tests {
