@@ -54,6 +54,7 @@ waits out the 60 second timeout and the row ends up showing `unavailable`.
 `~/.config/pullkit/config.yaml`:
 
 ```yaml
+concurrency: 4
 repos:
   - name: myapp
     path: ~/projects/myapp
@@ -63,16 +64,57 @@ repos:
     build_command: npm run build
 ```
 
+`concurrency` is how many repositories are pulled and built at the same time, from 1 to 10;
+it defaults to 4 when left out. `pullkit sync --jobs N` overrides it for one run.
+
 If the configuration file does not exist, pullkit creates it from the sample above and prints
 setup help. The same help is printed when the configuration contains no repositories.
 Repository paths may use `~` to refer to the current user's home directory.
 
 ## Per-repo behavior
 
-For each repo during sync:
+A sync works on `concurrency` repositories at once. For each repo:
 1. Check for uncommitted changes → skip with warning
 2. Check current branch is main/master → skip if not
 3. `git pull origin HEAD`, with the same non-interactive settings as the fetch above, and
    killed if it has not finished within 10 minutes
 4. If `build_command` is configured, run it
-5. Continue to next repo regardless of individual failures
+5. Failures in one repository never stop the others
+
+## Watching a sync
+
+On a terminal, the sync takes over the screen with one pane per worker. Each pane shows the
+repository its worker is on and the tail of what the pull and the build wrote, line by line as
+it arrives. When a pane would have fewer than three log rows, because the terminal is short or
+the concurrency high, the panes give way to one merged log with the repository's name in front of
+each line. Ctrl-C asks the running commands to stop, so a `git pull` can remove its lock files;
+a second Ctrl-C kills them. Once every repository is done, a key press leaves the screen and the
+summary is printed to the terminal.
+
+When stdin or stdout is not a terminal, a pipe or a cron job, the lines of every repository
+are printed as they arrive, each with the repository's name in front. The commands then stay in
+pullkit's own process group, so a Ctrl-C typed at a terminal that pullkit's output is piped
+through still reaches them; a job runner that signals only pullkit's pid ends pullkit alone.
+
+The GUI shows the same panes in a grid under the repository list. Quitting the GUI, by closing
+the window or with Cmd+Q, asks the running commands to stop, waits three seconds, and kills what
+is still running.
+
+If the terminal goes away while the screen is up, or pullkit is told to terminate, the commands
+are stopped the same way before pullkit ends.
+
+On the screen and in the GUI, anything pullkit started is stopped when the sync ends, the git
+commands that only read included, and also a process a build left running in the background: it
+shares the build's process group, and that group is stopped whether the sync was aborted or ran
+to the end. A build that means to leave a process behind has to start it in a session of its
+own, with `setsid` or the like. When stdin or stdout is not a terminal the pulls and builds share
+pullkit's own group, and a process a build leaves behind there is left alone, as any other
+command's would be.
+
+Two entries that share one repository, because one directory sits inside the other's work
+tree, are never worked on at the same time: a sync holds the repository from its status check
+to the end of its build.
+
+On Windows there are no process groups to signal; a stop takes the command's process tree
+down with `taskkill` instead, forcibly, and a process a build left behind after it ended is out
+of reach. Windows is not tested.

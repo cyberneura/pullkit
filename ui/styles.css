@@ -34,7 +34,20 @@ button.secondary { border: 1px solid #d5dbd4; background: white; color: #344039;
 button:disabled { cursor: not-allowed; opacity: .45; }
 input[type="checkbox"] { width: 16px; height: 16px; accent-color: #246b3a; }
 .select-all, .muted { color: #747e76; font-size: 12px; }
-.log-panel pre { min-height: 155px; max-height: 245px; overflow: auto; margin: 0; padding: 16px; background: #17211b; color: #d8eadb; font: 12px/1.6 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; }
+.log-panel pre { min-height: 80px; max-height: 245px; overflow: auto; margin: 0; padding: 16px; background: #17211b; color: #d8eadb; font: 12px/1.6 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; }
+.panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1px; background: #dfe3df; }
+.panes:empty { display: none; }
+.pane { display: flex; flex-direction: column; min-width: 0; background: #17211b; }
+.pane-title { display: flex; justify-content: space-between; gap: 8px; padding: 6px 12px; background: #24332a; color: #b7cfbb; font: 600 11px/1.4 ui-monospace, SFMono-Regular, monospace; }
+.pane-title .pane-state { font-weight: 400; color: #8fa895; }
+.pane-title.running .pane-state { color: #9fc4ff; }
+.pane-title.failed .pane-state { color: #ff9f8f; }
+.pane-title.done .pane-state { color: #9fdba8; }
+.pane-log { height: 180px; overflow: auto; margin: 0; padding: 10px 12px; color: #d8eadb; font: 12px/1.6 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pane-log .error { color: #ff9f8f; }
+.pane-log .warn { color: #ffd479; }
+.pane-log .ok { color: #9fdba8; }
+.pane-log .separator { color: #8fa895; }
 .badge { border-radius: 999px; padding: 4px 9px; background: #eef1ed; color: #627067; font-size: 11px; }
 .badge.running { background: #e7f0ff; color: #285c9b; }
 .badge.done { background: #e8f6ea; color: #277039; }

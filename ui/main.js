@@ -7,6 +7,7 @@ const refreshButton = document.querySelector("#refresh");
 const selectAll = document.querySelector("#select-all");
 const countEl = document.querySelector("#selection-count");
 const logEl = document.querySelector("#log");
+const panesEl = document.querySelector("#panes");
 const runState = document.querySelector("#run-state");
 let syncing = false;
 // Seeded per page rather than from zero, so a run left over from an earlier
@@ -16,6 +17,10 @@ let inspectionToken = Date.now();
 // `git fetch` calls have finished, so that a sync can say what it is waiting
 // for rather than stopping on a lock with nothing in the log.
 const runningLoads = new Set();
+// The sync this page started, if any. A page reloaded during a sync goes on
+// receiving that sync's events, which must not land in the panes of the one it
+// starts next.
+let syncToken = null;
 
 function selectedNames() {
   return [...document.querySelectorAll(".repo-check:checked")].map((input) => input.value);
@@ -128,7 +133,8 @@ syncButton.addEventListener("click", async () => {
   if (!names.length) return;
   syncing = true;
   updateSelection();
-  logEl.textContent = `pullkit run: ${names.length} repositories\n\n`;
+  panesEl.innerHTML = "";
+  logEl.textContent = `pullkit run: ${names.length} repositories\n`;
   runState.textContent = "Running";
   runState.className = "badge running";
   try {
@@ -139,7 +145,8 @@ syncButton.addEventListener("click", async () => {
       logEl.textContent += "waiting for the remote inspection to finish\n";
       await Promise.all(runningLoads);
     }
-    const results = await invoke("sync_selected", { names });
+    syncToken = Date.now();
+    const results = await invoke("sync_selected", { names, token: syncToken });
     logEl.textContent += "\nSummary\n";
     results.forEach((result) => { logEl.textContent += `  ${result.name.padEnd(20)} ${result.outcome}: ${result.message}\n`; });
     runState.textContent = "Complete";
@@ -155,6 +162,81 @@ syncButton.addEventListener("click", async () => {
   }
 });
 
+const FAILED_OUTCOMES = new Set(["pull_failed", "build_failed", "status_failed"]);
+// Lines kept per pane. A build can write far more, and a page holding every
+// line of several of them at once grows until it stops responding.
+const PANE_HISTORY = 2000;
+
+function paneHtml(index) {
+  return `<div class="pane" data-annotate="sync-pane" data-worker="${index}">
+    <div class="pane-title waiting"><span class="pane-repo">worker ${index + 1}</span><span class="pane-state">waiting</span></div>
+    <pre class="pane-log"></pre>
+  </div>`;
+}
+
+function pane(worker) {
+  return panesEl.querySelector(`.pane[data-worker="${worker}"]`);
+}
+
+function setPaneState(worker, repo, state, kind) {
+  const el = pane(worker);
+  if (!el) return;
+  const title = el.querySelector(".pane-title");
+  title.className = `pane-title ${kind}`;
+  title.querySelector(".pane-repo").textContent = `worker ${worker + 1} · ${repo}`;
+  title.querySelector(".pane-state").textContent = state;
+}
+
+function lineClass(line) {
+  if (line.startsWith("ERROR ")) return "error";
+  if (line.startsWith("WARN ")) return "warn";
+  if (line.startsWith("OK ")) return "ok";
+  return "";
+}
+
+// One pane per worker, laid out when the backend says how many it uses. A
+// pane keeps the lines of every repository its worker handled, so an error
+// from an earlier one stays readable until the run is over.
+function showSyncEvent(event) {
+  const { token, event: payload } = event.payload;
+  if (token !== syncToken) return;
+  if (payload.kind === "planned") {
+    panesEl.innerHTML = Array.from({ length: payload.workers }, (_, index) => paneHtml(index)).join("");
+    logEl.textContent += `running ${payload.workers} at a time\n`;
+    return;
+  }
+  if (payload.kind === "started") {
+    // The pane keeps the log of the repositories before this one, so the new
+    // one is set off from them.
+    const log = pane(payload.worker)?.querySelector(".pane-log");
+    if (log && log.childNodes.length) {
+      const separator = document.createElement("span");
+      separator.className = "separator";
+      separator.textContent = `\n── ${payload.name}\n`;
+      log.appendChild(separator);
+    }
+    setPaneState(payload.worker, payload.name, "running", "running");
+    return;
+  }
+  if (payload.kind === "line") {
+    const log = pane(payload.worker)?.querySelector(".pane-log");
+    if (!log) return;
+    const kind = lineClass(payload.line);
+    const span = document.createElement("span");
+    if (kind) span.className = kind;
+    span.textContent = `${payload.line}\n`;
+    log.appendChild(span);
+    while (log.childNodes.length > PANE_HISTORY) log.removeChild(log.firstChild);
+    log.scrollTop = log.scrollHeight;
+    return;
+  }
+  if (payload.kind === "finished") {
+    const { result } = payload;
+    const kind = FAILED_OUTCOMES.has(result.outcome) ? "failed" : "done";
+    setPaneState(payload.worker, result.name, result.outcome.replace(/_/g, " "), kind);
+  }
+}
+
 function showCommits(event) {
   const { token, commits } = event.payload;
   if (token !== inspectionToken) return;
@@ -165,11 +247,6 @@ function showCommits(event) {
   if (el && el.dataset.path === commits.path) el.innerHTML = commitsHtml(commits);
 }
 
-function appendLog(event) {
-  logEl.textContent += `${event.payload}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
 // The first load has to wait for the listeners: a fetch that finishes before
 // `listen` has registered would leave its row on the placeholder.
-Promise.all([listen("commit-inspected", showCommits), listen("sync-log", appendLog)]).then(refreshRepos);
+Promise.all([listen("commit-inspected", showCommits), listen("sync-event", showSyncEvent)]).then(refreshRepos);
