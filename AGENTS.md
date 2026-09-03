@@ -153,6 +153,12 @@ git remote add origin "ssh://git@10.255.255.1:22/nope.git"
   スレッドで回し、イベントは呼び出しスレッドで `on_event` に渡す (TUI の描画も Tauri の emit も
   1 スレッドで済む)。pull と build の出力は行単位でストリームする。まとめて出すとペインが
   `cargo build` の間ずっと空のままになる。
+- **Dock のアイコンは起動時に自分で設定する**。配布物は `.app` ではなく素のバイナリなので、
+  macOS には読む Info.plist が無く、放っておくと汎用の実行ファイルアイコンになる
+  (`NSRunningApplication` の `bundleIdentifier` は `nil`)。`src-tauri/icons/icon.png` を
+  `include_bytes!` で埋め込み、setup で `NSApplication.setApplicationIconImage` に渡す。
+  `bundle.icon` は `.app` を作る時にしか効かないので、そこに書いても意味が無い。
+  確認は `NSRunningApplication.icon` ではできない (バンドル由来の値を返すため)。
 - **桁を数える時は文字数ではなく端末のセル数を使う**。`display_width` / `truncate_to_width` /
   `pad_to_width` を使い、`chars().count()` や `{:<20}` で幅を扱わない。日本語や絵文字は 2 セルで
   描画されるため、文字数で数えると行が折り返して次の行を壊す。幅は書記素クラスタ単位で数える。
