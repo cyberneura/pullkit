@@ -18,7 +18,7 @@ fn ensure_icon() {
     let mut writer = encoder.write_header().expect("write icon header");
 
     let mut pixels = vec![0_u8; 32 * 32 * 4];
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[36, 107, 58, 255]);
     }
     writer.write_image_data(&pixels).expect("write icon pixels");
