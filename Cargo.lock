@@ -2459,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "pullkit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "pullkit-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "libc",
