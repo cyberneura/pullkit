@@ -125,14 +125,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pin a SHA from master, not from a generated branch like `stable`: those
-      # commits are collected once the branch moves on, and the run then fails
-      # before Rust is even installed.
+      # The version and the target come from rust-toolchain.toml, the same file
+      # the tests read, so that what ships is built with the compiler the checks
+      # ran against. Invoking a rustup proxy is what fetches it.
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
-        with:
-          toolchain: stable
-          targets: aarch64-apple-darwin
+        run: cargo --version
 
       - name: Cache Rust (cargo + target)
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2

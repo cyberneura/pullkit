@@ -40,14 +40,14 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pinned to a SHA on master rather than a generated branch like `stable`:
-      # those commits are collected once the branch moves on, and the run then
-      # fails before Rust is even installed.
+      # The version, the components and the targets all come from
+      # rust-toolchain.toml, so that there is one place to change them and CI
+      # cannot drift onto a different compiler than a checkout does. The runners
+      # ship rustup, and invoking one of its proxies is what fetches the pinned
+      # toolchain; done in a step of its own so that a failed download reads as
+      # a failed download rather than as a failed build.
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+        run: cargo --version
 
       - name: Cache Rust (cargo + target)
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
