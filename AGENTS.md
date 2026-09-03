@@ -55,10 +55,13 @@ squash / rebase / 直 push で結果が変わらず、失敗した run は原因
 **Rust の E2E 前に必ず `cargo build` する。** `cargo test` / `cargo clippy` は
 `target/debug/pullkit` を再リンクしないので、修正後に build せず実バイナリを触ると旧挙動を見る。
 
-**挙動を変えたら `cargo build --release` も実行する。** PATH の `pullkit` は
-`~/home-files/bin/pullkit` → `target/release/pullkit` のシンボリックリンクなので、
-release を作り直さないと、ユーザーが打つ `pullkit` は古いままになる。debug ビルドだけで
-検証を済ませると、この食い違いに気づけない。
+**PATH の `pullkit` は Homebrew の cask で、手元のビルドとは別物。** 公開済みの version が
+入っているだけなので、`pullkit` と打った結果を手元の変更の確認に使わない。検証は
+`./target/debug/pullkit` のようにパスを指定して行う。
+
+**コンパイラは `rust-toolchain.toml` で固定してある。** rustup 管理の cargo はこれを読むが、
+Homebrew の `rust` formula の cargo は無視して自分の version で通してしまう。`cargo --version` が
+そこに書いた version と違うなら、手元で clippy が通っても CI では落ちうる。
 
 ### TUI
 
