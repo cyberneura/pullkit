@@ -1,0 +1,68 @@
+# The gate in front of a release, and the checks a pull request gets.
+#
+# One file serves both because `workflow_call` and `pull_request` can sit on the
+# same workflow. release.yml calls this one with `uses:`, which puts these jobs
+# in *its own run*, so a plain `needs:` is enough to hold the build back until
+# they are green. A separate workflow started by the same push would not do:
+# `needs` cannot reach across runs, and the release would go out beside a red
+# test rather than behind it.
+name: Test
+
+on:
+  workflow_call:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A pull request keeps one run: a new push replaces the one still going. A call
+# from release.yml is keyed by its run instead, so a release can never queue
+# behind, or cancel, anything, least of all itself.
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # macOS only, as in the build: Tauri is not behind a feature here, so a Linux
+  # leg would need webkit2gtk and gtk3 installed to compile at all, for a binary
+  # that is not shipped.
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # Pinned to a SHA on master rather than a generated branch like `stable`:
+      # those commits are collected once the branch moves on, and the run then
+      # fails before Rust is even installed.
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Cache Rust (cargo + target)
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # --locked for the same reason the build job uses it: what is tested has
+      # to be what is built, and a stale Cargo.lock would quietly resolve to
+      # something else.
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Syntax-check the GUI script
+        run: node --check ui/main.js

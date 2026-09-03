@@ -5,3 +5,7 @@ menu:
     shell: "cargo run -- --gui"
   - title: "Build release"
     shell: "cargo build --release"
+  - title: "Release (minor bump, push to main)"
+    shell: "scripts/release.sh"
+  - title: "Release (patch bump, push to main)"
+    shell: "scripts/release.sh patch"

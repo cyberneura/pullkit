@@ -26,7 +26,29 @@ cargo fmt --all
 node --check ui/main.js      # JS の構文検査 (ビルド工程が無いのでこれで代替する)
 ```
 
-`.jj-menu.yaml` から TUI / GUI / release build を起動できる。
+`.jj-menu.yaml` から TUI / GUI / release build / リリース (version bump + push) を起動できる。
+
+## リリース
+
+`main` の `Cargo.toml` (workspace) の version を変えて push するとリリースされる
+(`.github/workflows/release.yml`)。`plan` ジョブが「その version の Release が公開済みか」を
+releases API に訊き、404 の時だけ test → build → release へ進む。判定は diff ではなく状態なので、
+squash / rebase / 直 push で結果が変わらず、失敗した run は原因を直して push すれば続きから走る。
+
+- 採番と push は `scripts/release.sh [patch|minor|major]` (既定 minor)。`Cargo.toml`、
+  `src-tauri/tauri.conf.json`、`Cargo.lock` を揃えて `Release vX.Y.Z` を main に直接 push する。
+- build は macOS arm64 のみ。Tauri を feature で切っていないので Linux レッグは作らない
+  (webkit2gtk を要求する)。素のバイナリを Developer ID で署名し notarytool で公証
+  (`--options runtime` 必須、staple は不可)、`pullkit-vX.Y.Z-aarch64-apple-darwin/pullkit` を含む
+  tar.gz を draft Release に載せ、アセット数を数えてから公開する。
+- 署名の Secrets (APPLE_*) は `~/home-files/sh/github-secret/deploy-github-secret-apple-building.sh`
+  の `repos` に `cyberneura/pullkit` を入れて実行すると 1Password から配られる。欠けていると
+  build が最初のステップで落ちる (黙って未署名で出さない)。
+- Homebrew は `cyberneura/homebrew-tap` の `Casks/pullkit.rb`。tap 側の `scripts/update.py` が毎時
+  latest release を見て version / url / sha256 を書き換えるので、このリポジトリから tap へ push
+  しない。新しい version は tap の cron 間隔ぶん遅れて `brew upgrade` に現れる。
+- `test.yml` は PR でも走る (fmt / clippy -D warnings / test / `node --check`)。release からは
+  `workflow_call` で同じ定義を呼ぶ。
 
 ## 検証の方法
 

@@ -5,6 +5,18 @@ Inspect and sync configured Git repositories.
 - **CLI** (default): list repo status, sync eligible repos
 - **GUI** (`--gui`): Tauri-based graphical interface
 
+## Install
+
+macOS on Apple Silicon, through Homebrew:
+
+```bash
+brew install --cask cyberneura/tap/pullkit
+```
+
+The cask installs the `pullkit` binary, which is both the terminal interface and, with
+`--gui`, the window. The binary is signed with a Developer ID and notarized, so the first
+run needs no workaround. Elsewhere, build from source with `cargo build --release`.
+
 ## Usage
 
 ```bash
@@ -118,3 +130,26 @@ to the end of its build.
 On Windows there are no process groups to signal; a stop takes the command's process tree
 down with `taskkill` instead, forcibly, and a process a build left behind after it ended is out
 of reach. Windows is not tested.
+
+## Releasing
+
+A release follows the version in `Cargo.toml` on `main`: change it there and push, and
+`.github/workflows/release.yml` builds, signs, notarizes, and publishes it. Nothing else starts
+one, and a version that is already released is left alone however often `main` is pushed.
+
+```bash
+scripts/release.sh          # minor bump
+scripts/release.sh patch
+scripts/release.sh major
+```
+
+The script bumps `Cargo.toml`, `src-tauri/tauri.conf.json`, and the lockfile together, commits
+`Release vX.Y.Z`, and pushes `main`. The workflow runs the tests, builds `pullkit` for
+`aarch64-apple-darwin`, signs and notarizes it, and publishes `pullkit-vX.Y.Z-aarch64-apple-darwin.tar.gz`
+on a GitHub Release with its checksum in the notes. If a run fails, fix the cause and push: the
+version is not released yet, so the next run carries on. The signing secrets come from
+`deploy-github-secret-apple-building.sh` in home-files.
+
+The Homebrew cask in [cyberneura/homebrew-tap](https://github.com/cyberneura/homebrew-tap)
+(`Casks/pullkit.rb`) is updated by the tap itself, which looks at the latest release every hour.
+This repository never pushes to the tap.
