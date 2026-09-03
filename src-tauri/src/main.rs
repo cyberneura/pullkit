@@ -8,20 +8,26 @@ use crossterm::{
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use pullkit_core::{
-    config_path, initialize_config, inspect_commits_parallel, load_config, sync_repos, RepoCommits,
-    RepoConfig, RepoStatus, SyncOutcome, SyncResult, EXAMPLE_CONFIG,
+    config_path, initialize_config, inspect_commits_parallel, load_config, sync_repos,
+    validate_concurrency, Isolation, RepoCommits, RepoConfig, RepoStatus, SyncEvent, SyncOutcome,
+    SyncResult, EXAMPLE_CONFIG,
 };
 use serde::Serialize;
 use std::{
     collections::HashSet,
     io::{self, IsTerminal, Write},
-    sync::mpsc::{self, Receiver},
+    sync::{
+        atomic::Ordering,
+        mpsc::{self, Receiver},
+    },
     thread,
     time::Duration,
 };
 use tauri::Emitter;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+
+mod sync_screen;
 
 #[derive(Parser)]
 #[command(
@@ -44,6 +50,10 @@ enum CliCommand {
         /// Comma-separated repository names.
         #[arg(long, value_delimiter = ',')]
         only: Vec<String>,
+        /// How many repositories to pull and build at once, 1 to 10. Overrides
+        /// `concurrency` in the configuration file.
+        #[arg(short, long)]
+        jobs: Option<usize>,
     },
 }
 
@@ -51,12 +61,25 @@ fn main() {
     let args = Args::parse();
     let result = run(args);
     if let Err(error) = result {
-        eprintln!("pullkit: {error:#}");
+        // A signal on its way out is what ends the process then: this thread
+        // must not get to `exit` first, or the shell would see an exit code in
+        // place of the signal.
+        if EXITING.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_secs(10));
+        }
+        // An error on any path may leave the fetches of a list or the commands
+        // of a sync running in groups of their own, with this process about to
+        // go; the list screen, for one, returns its errors straight up. The
+        // stop comes first, and the message is not allowed to panic on a
+        // closed stderr, so that nothing stands between the error and the stop.
+        pullkit_core::stop_running_commands(Duration::from_secs(2));
+        let _ = writeln!(io::stderr(), "pullkit: {error:#}");
         std::process::exit(1);
     }
 }
 
 fn run(args: Args) -> Result<()> {
+    stop_commands_on_hangup()?;
     let initialized_path = initialize_config()?;
     if let Some(path) = &initialized_path {
         print_config_help(
@@ -106,22 +129,80 @@ fn print_config_help(message: &str, instruction: &str) {
     println!("Edit the repository names, paths, and build commands, then run pullkit again.");
 }
 
+/// Stops the commands and leaves when the terminal hangs up or the process is
+/// told to end. The git commands that only read, the list's fetches, and the
+/// pulls and builds of the screen and the GUI run in process groups of their
+/// own, so the hangup that ends pullkit does not reach them, and the default
+/// action of the signal would end pullkit before any of its ways out could
+/// stop them. The pulls and builds of the plain output share this process's
+/// group and are not on the list: a signal a terminal sends to the group, a
+/// Ctrl-C or a hangup, reaches them as it always has, and one sent to
+/// pullkit's pid alone leaves them to end on their own, as it always has.
+#[cfg(unix)]
+fn stop_commands_on_hangup() -> Result<()> {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    // SIGINT is on the list for the moments a terminal is in cooked mode with
+    // commands of their own group running: the wait for the list's fetches
+    // before the screen, for one. The raw mode screens never generate it, and
+    // the plain output's pulls and builds get it themselves.
+    let mut signals = signal_hook::iterator::Signals::new([SIGHUP, SIGINT, SIGTERM])?;
+    thread::Builder::new().spawn(move || {
+        let Some(signal) = signals.forever().next() else {
+            return;
+        };
+        pullkit_core::stop_running_commands(Duration::from_secs(3));
+        // A screen may be up: its session is not dropped on this way out, and
+        // the terminal would be left in raw mode on the alternate screen. No
+        // new screen may start from here on either, or it would be left the
+        // same way a moment later.
+        EXITING.store(true, Ordering::SeqCst);
+        // The gate is held to the end, so that no screen starts between the
+        // look at the terminal and the death of the process.
+        let _gate = terminal_gate();
+        if terminal::is_raw_mode_enabled().unwrap_or(false) {
+            let _ = execute!(io::stdout(), Show, LeaveAlternateScreen, ResetColor);
+            let _ = terminal::disable_raw_mode();
+        }
+        // Die of the signal itself rather than exit with a code: a shell script
+        // decides whether to stop on Ctrl-C by whether its child died of
+        // SIGINT, not by the code it returned. The call does not return: it
+        // raises the signal with its default action restored, and aborts if
+        // it cannot.
+        let _ = signal_hook::low_level::emulate_default_handler(signal);
+        std::process::exit(128 + signal);
+    })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn stop_commands_on_hangup() -> Result<()> {
+    Ok(())
+}
+
 fn run_cli(command: Option<CliCommand>) -> Result<()> {
     let config = load_config()?;
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     match command {
         None => {
-            if io::stdin().is_terminal() && io::stdout().is_terminal() {
+            if interactive {
                 if let Some(repos) = run_tui(&config.repos)? {
-                    run_sync(repos)?;
+                    run_sync(repos, config.concurrency)?;
                 }
             } else {
                 print_repo_list(&config.repos);
             }
             Ok(())
         }
-        Some(CliCommand::Sync { only }) => {
+        Some(CliCommand::Sync { only, jobs }) => {
             let repos = select_repos(&config.repos, &only)?;
-            run_sync(repos)
+            let concurrency = match jobs {
+                Some(jobs) => {
+                    validate_concurrency(jobs)?;
+                    jobs
+                }
+                None => config.concurrency,
+            };
+            run_sync(repos, concurrency)
         }
     }
 }
@@ -133,7 +214,7 @@ fn print_repo_list(repos: &[RepoConfig]) {
     let statuses: Vec<_> = repos.iter().map(pullkit_core::inspect).collect();
     let mut commits: Vec<Option<RepoCommits>> = vec![None; repos.len()];
     inspect_commits_parallel(repos, |index, item| commits[index] = Some(item));
-    println!(
+    print_line(&format!(
         "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} PATH",
         pad_to_width("REPOSITORY", NAME_WIDTH),
         "TREE",
@@ -142,10 +223,14 @@ fn print_repo_list(repos: &[RepoConfig]) {
         "LOCAL COMMIT",
         "REMOTE COMMIT",
         "DIFFERENCE"
-    );
+    ));
     for (status, commits) in statuses.iter().zip(&commits) {
         print_status(status, commits.as_ref());
     }
+    // For a helper that a hook of one of the git commands left behind. The
+    // lines above go through `print_line` so that a closed pipe ends in a stop
+    // rather than in a panic this call would never be reached past.
+    pullkit_core::stop_leftover_commands(Duration::from_secs(3));
 }
 
 /// Runs the commit inspection on a background thread so a list can be shown
@@ -200,21 +285,79 @@ fn commit_cells(commits: Option<&RepoCommits>) -> CommitCells {
     }
 }
 
-fn run_sync(repos: Vec<RepoConfig>) -> Result<()> {
-    println!(
-        "pullkit run: {} repositor{}",
-        repos.len(),
-        if repos.len() == 1 { "y" } else { "ies" }
-    );
-    println!();
-    let results = sync_repos(&repos, |line| println!("{line}"));
+/// Writes one line of the plain output. A reader that has gone away, `head`
+/// say, closes the pipe, and going on would only leave the sync running for
+/// nobody; `println!` would panic instead, and the panic would wait for every
+/// worker, and so for a build with no timeout, before it got anywhere.
+fn print_line(line: &str) {
+    let mut stdout = io::stdout().lock();
+    if writeln!(stdout, "{line}")
+        .and_then(|()| stdout.flush())
+        .is_err()
+    {
+        // The other workers may be in the middle of a git command with a
+        // group of its own; the pulls and builds of this path share this
+        // process's group and are left to end on their own, as before.
+        pullkit_core::stop_running_commands(Duration::from_secs(1));
+        std::process::exit(1);
+    }
+}
+
+/// On a terminal the sync gets a screen with one pane per worker; anywhere
+/// else, a pipe or a cron job, the lines of every repository are written one
+/// after another with the repository's name in front. The screen's raw mode
+/// turns Ctrl-C into a key press, so the screen passes it on to the commands
+/// itself; the plain output leaves them in the terminal's process group, where
+/// Ctrl-C reaches them as it always has.
+fn run_sync(repos: Vec<RepoConfig>, concurrency: usize) -> Result<()> {
+    let count = repos.len();
+    let header = |workers: usize| {
+        print_line(&format!(
+            "pullkit run: {count} repositor{}, {workers} at a time",
+            if count == 1 { "y" } else { "ies" }
+        ));
+    };
+    let (results, aborted) = if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        let outcome = sync_screen::run(repos, concurrency)?;
+        header(concurrency.min(count));
+        (outcome.results, outcome.aborted)
+    } else {
+        let results = sync_repos(
+            &repos,
+            concurrency,
+            Isolation::SharedGroup,
+            |event| match event {
+                SyncEvent::Planned { workers } => {
+                    header(workers);
+                    print_line("");
+                }
+                SyncEvent::Line { name, line, .. } => print_line(&format!("[{name}] {line}")),
+                SyncEvent::Started { .. } | SyncEvent::Finished { .. } => {}
+            },
+        );
+        // The pulls and builds of this path shared this process's group and
+        // are out of reach here, as is anything they left behind; this is for
+        // the git commands that only read, which have groups of their own.
+        pullkit_core::stop_leftover_commands(Duration::from_secs(3));
+        (results, false)
+    };
     print_summary(&results);
-    if results.iter().any(|result| {
+    let not_started = count - results.len();
+    if aborted && not_started > 0 {
+        print_line(&format!(
+            "\naborted: {not_started} repositor{} never started",
+            if not_started == 1 { "y" } else { "ies" }
+        ));
+    } else if aborted {
+        print_line("\naborted");
+    }
+    let failed = results.iter().any(|result| {
         matches!(
             result.outcome,
             SyncOutcome::PullFailed | SyncOutcome::BuildFailed | SyncOutcome::StatusFailed
         )
-    }) {
+    });
+    if failed || aborted {
         std::process::exit(1);
     }
     Ok(())
@@ -267,12 +410,31 @@ impl TuiState {
     }
 }
 
+/// Set once a signal has started the way out, so that no screen is entered
+/// after the terminal was put back.
+static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Held while the terminal is being put into raw mode or taken out of it on
+/// the way out, so that the two cannot interleave: a screen entered just after
+/// the signal thread had looked would be left raw when the process dies.
+static TERMINAL_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn terminal_gate() -> std::sync::MutexGuard<'static, ()> {
+    TERMINAL_GATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 struct TerminalSession {
     stdout: io::Stdout,
 }
 
 impl TerminalSession {
     fn enter() -> Result<Self> {
+        let _gate = terminal_gate();
+        if EXITING.load(Ordering::SeqCst) {
+            bail!("pullkit is exiting");
+        }
         terminal::enable_raw_mode()?;
         let mut stdout = io::stdout();
         if let Err(error) = execute!(stdout, EnterAlternateScreen, Hide) {
@@ -359,8 +521,10 @@ fn run_tui(repos: &[RepoConfig]) -> Result<Option<Vec<RepoConfig>>> {
 
 /// Quitting would otherwise leave the fetches of the list running: each one has
 /// a process group of its own, so nothing reaches it once this process is gone.
+/// They are asked to stop and given a moment, so that a fetch can remove its
+/// lock files, then killed if still there.
 fn leave_tui() -> Option<Vec<RepoConfig>> {
-    pullkit_core::terminate_running_fetches();
+    pullkit_core::stop_running_commands(Duration::from_secs(2));
     None
 }
 
@@ -620,7 +784,7 @@ fn select_repos(repos: &[RepoConfig], only: &[String]) -> Result<Vec<RepoConfig>
 fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
     let cells = commit_cells(commits);
     if let Some(error) = &status.error {
-        println!(
+        print_line(&format!(
             "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {} ({error})",
             pad_to_width(&status.name, NAME_WIDTH),
             "error",
@@ -630,9 +794,9 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
             cells.remote,
             cells.difference,
             status.path.display()
-        );
+        ));
     } else {
-        println!(
+        print_line(&format!(
             "{} {:<8} {} {:<8} {:<DATE_WIDTH$} {:<DATE_WIDTH$} {:<DIFFERENCE_WIDTH$} {}",
             pad_to_width(&status.name, NAME_WIDTH),
             if status.clean { "clean" } else { "dirty" },
@@ -642,19 +806,19 @@ fn print_status(status: &RepoStatus, commits: Option<&RepoCommits>) {
             cells.remote,
             cells.difference,
             status.path.display()
-        );
+        ));
     }
 }
 
 fn print_summary(results: &[SyncResult]) {
-    println!("\nSummary");
+    print_line("\nSummary");
     for result in results {
-        println!(
+        print_line(&format!(
             "  {} {:<16} {}",
             pad_to_width(&result.name, NAME_WIDTH),
             format!("{:?}", result.outcome).to_lowercase(),
             result.message
-        );
+        ));
     }
 }
 
@@ -690,10 +854,23 @@ async fn inspect_all_commits(app: tauri::AppHandle, token: InspectionToken) -> R
     .map_err(|error| error.to_string())?
 }
 
+#[derive(Clone, Serialize)]
+struct SyncEventEnvelope {
+    token: InspectionToken,
+    event: SyncEvent,
+}
+
+/// Syncs the named repositories `concurrency` at a time and emits one
+/// `sync-event` per event, so the window can keep one pane per worker. The
+/// commands get process groups of their own: the window has no terminal to
+/// deliver Ctrl-C, so closing it is what stops them, through the window event
+/// below. `token` comes back on every event, so that a page reloaded during a
+/// sync can tell that sync's events from those of one it starts itself.
 #[tauri::command]
 async fn sync_selected(
     app: tauri::AppHandle,
     names: Vec<String>,
+    token: InspectionToken,
 ) -> Result<Vec<SyncResult>, String> {
     if names.is_empty() {
         // `select_repos` reads an empty list as "every repository", which is the
@@ -703,28 +880,41 @@ async fn sync_selected(
     tauri::async_runtime::spawn_blocking(move || {
         let config = load_config().map_err(|error| format!("{error:#}"))?;
         let repos = select_repos(&config.repos, &names).map_err(|error| format!("{error:#}"))?;
-        let results = sync_repos(&repos, |line| {
-            let _ = app.emit("sync-log", line);
+        let results = sync_repos(&repos, config.concurrency, Isolation::OwnGroup, |event| {
+            let _ = app.emit("sync-event", SyncEventEnvelope { token, event });
         });
+        // The window stays open for another sync, so what a build left behind
+        // is stopped now rather than at the window's close, and without
+        // abandoning anything.
+        pullkit_core::stop_leftover_commands(Duration::from_secs(3));
         Ok(results)
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
+/// Quitting the GUI asks the running commands to stop, waits a little, and
+/// kills what is still running: a `git pull` or a build that gets the request
+/// cleans up after itself, where one killed outright can leave a lock file in
+/// the repository, but one that ignores the request would otherwise outlive
+/// the window with nothing left to stop it. A fetch of the list, and a process
+/// a build left running in the background, stop the same way. The stop hangs
+/// on the exit of the event loop rather than on the window: Cmd+Q on macOS
+/// ends the application without closing the window first, and the window's
+/// own close reaches the exit as well.
 fn run_gui() -> Result<()> {
     tauri::Builder::default()
-        .on_window_event(|_window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                pullkit_core::terminate_running_fetches();
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             list_repos,
             inspect_all_commits,
             sync_selected
         ])
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                pullkit_core::stop_running_commands(Duration::from_secs(3));
+            }
+        });
     Ok(())
 }
 
