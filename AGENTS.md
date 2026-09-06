@@ -81,7 +81,15 @@ Tauri の GUI ウィンドウはブラウザで確認できないが、TUI は p
 ので、debug ビルドでも古い JS / CSS のまま起動する。
 
 描画ロジックだけなら、`ui/main.js` を Node の `vm` で DOM スタブ上に読み込んで検証できる
-(`window.__TAURI__.core.invoke` と `event.listen` をスタブする)。
+(`window.__TAURI__.core.invoke` と `event.listen` をスタブする)。jsdom を使うと
+`click()` まで含めて実際の DOM で回せる。**`window.eval` に読ませた `let` は
+ページのグローバルにならない**ので、`inspectionToken` のような値は
+`invoke("inspect_all_commits")` に渡された引数から読み戻す。
+
+桁揃えのような**レイアウトは jsdom では測れない** (レイアウトエンジンが無い)。
+jsdom で組み立てた DOM を静的 HTML に落とし、`127.0.0.1` ではなく LAN の IP で
+`http.server` を立ててリモート Chrome (agent-browser) に読ませ、
+`getBoundingClientRect()` で列の左端を実測する。**確認が済んだらサーバーは必ず落とす。**
 
 ### リモートを伴う経路
 
@@ -159,6 +167,14 @@ git remote add origin "ssh://git@10.255.255.1:22/nope.git"
   `include_bytes!` で埋め込み、setup で `NSApplication.setApplicationIconImage` に渡す。
   `bundle.icon` は `.app` を作る時にしか効かないので、そこに書いても意味が無い。
   確認は `NSRunningApplication.icon` ではできない (バンドル由来の値を返すため)。
+- **GUI の一覧は `<table>` で組み、`table-layout: fixed` で桁を固定する**。flex の行に
+  `min-width` を置く旧実装では、`Missing` の幅広ステータスや `diverged by 12 months` の
+  長いラベルが後続のセルを押し出し、行ごとに桁がずれた (CYBERNEURA-DEV-687。実測で
+  最大 32px)。列幅を content 依存にしないこと。行全体のクリックでチェックが入る挙動は、
+  `<label>` が使えなくなったので `#repos` に張った click の委譲で保っている。
+- **`difference` の文言から状態を読み戻さない**。`RepoCommits.relation`
+  (`same` / `behind` / `ahead` / `diverged`) が正で、`difference` は人間向けの表記。
+  色分けと「Select all outdated」はどちらも relation を見る。
 - **桁を数える時は文字数ではなく端末のセル数を使う**。`display_width` / `truncate_to_width` /
   `pad_to_width` を使い、`chars().count()` や `{:<20}` で幅を扱わない。日本語や絵文字は 2 セルで
   描画されるため、文字数で数えると行が折り返して次の行を壊す。幅は書記素クラスタ単位で数える。

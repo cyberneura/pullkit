@@ -27,6 +27,10 @@ pub struct Config {
     /// How many repositories a sync pulls and builds at the same time.
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+    /// Whether a list starts with the repositories the remote is ahead of
+    /// already selected, each one as its own inspection finishes.
+    #[serde(default)]
+    pub select_outdated_by_default: bool,
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
 }
@@ -67,8 +71,21 @@ pub struct RepoCommits {
     pub path: PathBuf,
     pub local: Option<CommitInfo>,
     pub remote: Option<CommitInfo>,
+    /// The ancestry, for callers that act on it. `difference` is the same
+    /// answer in words, and reading the wording back is not a way to get here:
+    /// it is written for people and may be reworded.
+    pub relation: Option<CommitRelation>,
     pub difference: Option<String>,
     pub error: Option<String>,
+}
+
+impl RepoCommits {
+    /// Whether the remote holds commits this repository does not, which is
+    /// what a pull would bring in. A diverged repository is left out: a pull
+    /// there is a merge, not the catching up this answers for.
+    pub fn is_behind(&self) -> bool {
+        matches!(self.relation, Some(CommitRelation::Behind))
+    }
 }
 
 const MAX_COMMIT_WORKERS: usize = 8;
@@ -495,6 +512,7 @@ pub fn inspect_commits(repo: &RepoConfig) -> RepoCommits {
         path: repo.path.clone(),
         local: None,
         remote: None,
+        relation: None,
         difference: None,
         error: None,
     };
@@ -519,7 +537,8 @@ pub fn inspect_commits(repo: &RepoConfig) -> RepoCommits {
         Ok(remote) => {
             match commit_relation(&repo.path, &local, &remote) {
                 Ok(relation) => {
-                    commits.difference = Some(describe_difference(&local, &remote, relation))
+                    commits.relation = Some(relation);
+                    commits.difference = Some(describe_difference(&local, &remote, relation));
                 }
                 Err(error) => commits.error = Some(format!("{error:#}")),
             }
@@ -1069,8 +1088,10 @@ fn forget_running(child: &Child, isolation: Isolation) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommitRelation {
+/// Which of the two commits contains the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitRelation {
     Same,
     Behind,
     Ahead,
@@ -1982,6 +2003,44 @@ mod tests {
         assert!(validate_concurrency(1).is_ok());
         assert!(validate_concurrency(MAX_CONCURRENCY).is_ok());
         assert!(validate_concurrency(MAX_CONCURRENCY + 1).is_err());
+    }
+
+    #[test]
+    fn config_leaves_the_outdated_selection_off_unless_it_is_asked_for() {
+        // Arrange & Act
+        let defaulted: Config = serde_yaml::from_str("repos: []\n").unwrap();
+        let asked_for: Config =
+            serde_yaml::from_str("select_outdated_by_default: true\nrepos: []\n").unwrap();
+        let example: Config = serde_yaml::from_str(EXAMPLE_CONFIG).unwrap();
+
+        // Assert: the sample carries the key so it can be found, set to the
+        // same value as leaving it out.
+        assert!(!defaulted.select_outdated_by_default);
+        assert!(asked_for.select_outdated_by_default);
+        assert!(!example.select_outdated_by_default);
+        assert!(EXAMPLE_CONFIG.contains("select_outdated_by_default: false"));
+    }
+
+    #[test]
+    fn behind_is_the_only_relation_a_list_calls_outdated() {
+        // Arrange
+        let of = |relation| RepoCommits {
+            name: "repo".into(),
+            path: PathBuf::from("repo"),
+            local: None,
+            remote: None,
+            relation,
+            difference: None,
+            error: None,
+        };
+
+        // Assert: a diverged repository needs a merge, not the catching up
+        // this answers for, and an uninspected one is not known to be anything.
+        assert!(of(Some(CommitRelation::Behind)).is_behind());
+        assert!(!of(Some(CommitRelation::Same)).is_behind());
+        assert!(!of(Some(CommitRelation::Ahead)).is_behind());
+        assert!(!of(Some(CommitRelation::Diverged)).is_behind());
+        assert!(!of(None).is_behind());
     }
 
     #[test]

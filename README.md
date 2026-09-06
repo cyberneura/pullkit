@@ -34,7 +34,8 @@ pullkit --gui
 ```
 
 In the terminal interface, use Up/Down or `j`/`k` to move, Space to select repositories,
-`a` to select all available repositories, Enter to sync, and `q` or Esc to quit.
+`a` to select all available repositories, `o` to select the outdated ones, Enter to sync, and
+`q` or Esc to quit.
 When standard input or output is redirected, `pullkit` prints the repository status as a table.
 
 Every list shows the date of the latest local commit, the date of the latest commit on
@@ -42,6 +43,13 @@ Every list shows the date of the latest local commit, the date of the latest com
 between them in words. Which side is ahead comes from the ancestry of the two commits, and
 the dates supply the size of the gap: `up to date`, `2 days behind`, `3 hours ahead`, or
 `diverged by 5 days` when neither commit contains the other.
+
+A repository is *outdated* when the remote holds commits it does not, the `behind` case: a
+pull there brings those commits in and nothing else. `o` in the terminal interface and
+**Select all outdated** in the GUI select exactly those, replacing whatever was selected, so
+that asking for them stays possible once something else has been picked. A repository that has
+diverged is left out, because a pull there is a merge rather than catching up. Rows whose fetch
+has not come back yet are left out as well: nothing is known about them.
 
 The terminal interface and the GUI show the list immediately with `fetching...` placeholders
 and update each row as its fetch completes; the table printed to a pipe waits for every
@@ -67,6 +75,7 @@ waits out the 60 second timeout and the row ends up showing `unavailable`.
 
 ```yaml
 concurrency: 4
+select_outdated_by_default: false
 repos:
   - name: myapp
     path: ~/projects/myapp
@@ -78,6 +87,12 @@ repos:
 
 `concurrency` is how many repositories are pulled and built at the same time, from 1 to 10;
 it defaults to 4 when left out. `pullkit sync --jobs N` overrides it for one run.
+
+`select_outdated_by_default` starts a list with the outdated repositories already selected,
+each row as its own fetch comes back rather than all at the end, so the list can be used while
+they arrive. It defaults to false. A row you have decided about is left as you left it, whether
+you decided before its fetch returned or after, and so is every row once you have used
+**Select all outdated** or **Select all**.
 
 If the configuration file does not exist, pullkit creates it from the sample above and prints
 setup help. The same help is printed when the configuration contains no repositories.

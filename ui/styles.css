@@ -2,28 +2,42 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; }
 main { width: 100%; }
-.panel-heading, .actions, .repo, .toolbar-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.panel-heading, .actions, .toolbar-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 h2 { margin: 0; font-size: 15px; }
 p { margin: 4px 0 0; }
 .panel-heading, .actions { padding: 14px 16px; }
 .panel-heading { border-bottom: 1px solid #dfe3df; background: #f7f8f7; }
-.repo-list { width: 100%; min-height: 80px; }
-.repo { justify-content: flex-start; padding: 13px 16px; border-bottom: 1px solid #edf0ec; cursor: pointer; }
-.repo:hover { background: #f8faf7; }
-.repo.missing { background: #f2f3f2; color: #858b87; cursor: not-allowed; }
-.repo.missing .repo-path { color: #969b97; }
-.repo-info { min-width: 0; flex: 1; }
+/* The columns have fixed widths, so a window too narrow for them scrolls
+   rather than squeezing the repository column down to nothing. */
+.repo-list { width: 100%; min-height: 80px; overflow-x: auto; }
+/* Fixed layout so a column is the same width on every row: with the widths
+   taken from the content, a wider status pill or a shorter date moves the
+   cells after it and the columns stop lining up down the list. */
+.repo-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.repo-table th { padding: 7px 16px; color: #8a938c; font-size: 10px; font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
+.repo-table td { padding: 13px 16px; border-bottom: 1px solid #edf0ec; vertical-align: middle; }
+.col-check { width: 46px; padding-right: 0; }
+.col-status { width: 116px; }
+/* Wide enough for a date and for `diverged by 12 months`, the longest label
+   either column can hold, so that neither has to wrap onto a second line. */
+.col-date { width: 150px; font-family: ui-monospace, monospace; font-size: 11px; color: #344039; white-space: nowrap; }
+.col-difference { width: 184px; }
+.repo { cursor: pointer; }
+.repo:hover td { background: #f8faf7; }
+.repo.missing td { background: #f2f3f2; color: #858b87; }
+.repo.missing { cursor: not-allowed; }
+.repo.missing .repo-path, .repo.missing .col-date { color: #969b97; }
+/* The name and the path share one cell, so the cell is what clips: the path
+   can be any length and must not widen the column it sits in. */
+.col-repo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .repo-name { font-weight: 650; }
-.repo-path { overflow: hidden; margin-top: 3px; color: #768078; font-family: ui-monospace, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.status { min-width: 84px; border-radius: 999px; padding: 4px 8px; background: #edf7ee; color: #277039; font-size: 11px; text-align: center; }
+.repo-path { margin-left: 6px; color: #768078; font-family: ui-monospace, monospace; font-size: 11px; }
+.status, .difference { display: inline-block; width: 100%; border-radius: 999px; padding: 4px 8px; font-size: 11px; text-align: center; }
+.status { background: #edf7ee; color: #277039; }
 .status.dirty, .status.error { background: #fff0ed; color: #a23b2b; }
 .status.branch { background: #fff6df; color: #8a6409; }
 .status.missing { background: #e3e5e3; color: #747a76; }
-.commits { display: flex; flex: none; align-items: center; gap: 14px; }
-.commit { display: flex; flex-direction: column; min-width: 104px; font-family: ui-monospace, monospace; font-size: 11px; color: #344039; }
-.commit small { font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 10px; color: #8a938c; letter-spacing: .04em; text-transform: uppercase; }
-.repo.missing .commit { color: #969b97; }
-.difference { min-width: 112px; border-radius: 999px; padding: 4px 8px; background: #eef1ed; color: #627067; font-size: 11px; text-align: center; }
+.difference { background: #eef1ed; color: #627067; }
 .difference.same { background: #edf7ee; color: #277039; }
 .difference.behind { background: #fff6df; color: #8a6409; }
 .difference.ahead { background: #e7f0ff; color: #285c9b; }

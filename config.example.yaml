@@ -1,5 +1,7 @@
 # How many repositories to pull and build at the same time, 1 to 10.
 concurrency: 4
+# Start a list with the repositories the remote is ahead of already selected.
+select_outdated_by_default: false
 repos:
   - name: myapp
     path: ~/workspace/myapp
