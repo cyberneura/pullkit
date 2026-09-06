@@ -5,6 +5,7 @@ const reposEl = document.querySelector("#repos");
 const syncButton = document.querySelector("#sync");
 const refreshButton = document.querySelector("#refresh");
 const selectAll = document.querySelector("#select-all");
+const selectOutdatedButton = document.querySelector("#select-outdated");
 const countEl = document.querySelector("#selection-count");
 const logEl = document.querySelector("#log");
 const panesEl = document.querySelector("#panes");
@@ -21,9 +22,16 @@ const runningLoads = new Set();
 // receiving that sync's events, which must not land in the panes of the one it
 // starts next.
 let syncToken = null;
+// Read with the repository list, so that an edit to the configuration takes
+// effect on the next refresh rather than only on a restart.
+let selectOutdatedByDefault = false;
 
 function selectedNames() {
   return [...document.querySelectorAll(".repo-check:checked")].map((input) => input.value);
+}
+
+function outdatedChecks() {
+  return [...document.querySelectorAll('.repo[data-relation="behind"] .repo-check:not(:disabled)')];
 }
 
 function updateSelection() {
@@ -32,6 +40,11 @@ function updateSelection() {
   countEl.textContent = `${selected} selected`;
   syncButton.disabled = syncing || selected === 0;
   refreshButton.disabled = syncing || runningLoads.size > 0;
+  // Off while the fetches are still running, because until they are in there
+  // is no telling which rows are outdated, and off afterwards when none are,
+  // which says so more plainly than a button that does nothing.
+  selectOutdatedButton.disabled =
+    syncing || runningLoads.size > 0 || outdatedChecks().length === 0;
   selectAll.checked = all.length > 0 && selected === all.length;
   selectAll.indeterminate = selected > 0 && selected < all.length;
 }
@@ -44,29 +57,62 @@ function statusFor(repo) {
   return ["", "Ready"];
 }
 
+// The backend sends the ancestry as well as its wording. Deriving the kind
+// from the wording, as this once did, ties the colour and "Select all
+// outdated" to text that is written for people and may be reworded.
+const RELATION_KINDS = { same: "same", behind: "behind", ahead: "ahead", diverged: "diverged" };
+
 function commitCells(commits) {
   if (commits === "pending") return { local: "-", remote: "-", difference: "fetching…", kind: "pending", error: "" };
   if (commits === null) return { local: "-", remote: "-", difference: "-", kind: "pending", error: "" };
   const date = (commit) => (commit ? commit.date : "-");
-  let kind = "error";
-  if (commits.difference === "up to date") kind = "same";
-  else if (commits.difference?.endsWith("behind")) kind = "behind";
-  else if (commits.difference?.endsWith("ahead")) kind = "ahead";
-  else if (commits.difference) kind = "diverged";
   return {
     local: date(commits.local),
     remote: date(commits.remote),
     difference: commits.difference || (commits.error ? "unavailable" : "-"),
-    kind,
+    kind: RELATION_KINDS[commits.relation] || "error",
     error: commits.error || "",
   };
 }
 
-function commitsHtml(commits) {
-  const cells = commitCells(commits);
-  return `<span class="commit"><small>local</small>${escapeHtml(cells.local)}</span>
-    <span class="commit"><small>remote</small>${escapeHtml(cells.remote)}</span>
-    <span class="difference ${cells.kind}" title="${escapeHtml(cells.error)}">${escapeHtml(cells.difference)}</span>`;
+function commitCellsHtml(cells) {
+  return `<td class="col-date col-local">${escapeHtml(cells.local)}</td>
+    <td class="col-date col-remote">${escapeHtml(cells.remote)}</td>
+    <td class="col-difference"><span class="difference ${cells.kind}" title="${escapeHtml(cells.error)}">${escapeHtml(cells.difference)}</span></td>`;
+}
+
+// A table rather than a row of flex items: every cell of a column is then as
+// wide as the column, so a wider status pill or a shorter date cannot push the
+// cells after it out of line with the rows above. The row was a `<label>`
+// before, which is what named each checkbox; a `<tr>` cannot wrap one, so the
+// name is given with `aria-label` instead. Without it a screen reader, and the
+// accessibility tree the GUI is driven through in tests, sees a column of
+// checkboxes with nothing to tell them apart.
+function repoTableHtml(repos) {
+  const rows = repos.map((repo) => {
+    const [kind, text] = statusFor(repo);
+    const missing = !repo.path_exists;
+    const cells = commitCells(missing ? null : "pending");
+    return `<tr class="repo${missing ? " missing" : ""}" data-annotate="repository-row"
+      data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" data-relation="${cells.kind}"
+      title="${escapeHtml(repo.error || "")}">
+      <td class="col-check"><input class="repo-check" data-annotate="checkbox-repository" type="checkbox" aria-label="${escapeHtml(repo.name)}" value="${escapeHtml(repo.name)}"${missing ? " disabled" : ""} /></td>
+      <td class="col-repo"><span class="repo-name">${escapeHtml(repo.name)}</span><span class="repo-path">${escapeHtml(repo.path)}</span></td>
+      <td class="col-status"><span class="status ${kind}">${escapeHtml(text)}</span></td>
+      ${commitCellsHtml(cells)}
+    </tr>`;
+  }).join("");
+  return `<table class="repo-table">
+    <thead><tr>
+      <th class="col-check"></th>
+      <th class="col-repo">Repository</th>
+      <th class="col-status">Status</th>
+      <th class="col-date">Local</th>
+      <th class="col-date">Remote</th>
+      <th class="col-difference">Difference</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
 }
 
 function refreshRepos() {
@@ -84,24 +130,19 @@ async function loadRepos() {
   // until the new list is drawn.
   updateSelection();
   try {
+    // Both come from the same file, so one failure covers both.
+    const outdatedByDefault = await invoke("select_outdated_by_default");
     const repos = await invoke("list_repos");
     if (token !== inspectionToken) return;
+    // Adopted only once this load is known to be the current one, or a slow
+    // reply from a superseded load would set the value the new list uses.
+    selectOutdatedByDefault = outdatedByDefault;
     if (!repos.length) {
       reposEl.innerHTML = '<p class="empty muted">No repositories in config.yaml.</p>';
     } else {
-      reposEl.innerHTML = repos.map((repo) => {
-        const [kind, text] = statusFor(repo);
-        const missing = !repo.path_exists;
-        return `<label class="repo${missing ? " missing" : ""}" title="${escapeHtml(repo.error || "")}">
-          <input class="repo-check" data-annotate="checkbox-repository" type="checkbox" value="${escapeHtml(repo.name)}"${missing ? " disabled" : ""} />
-          <span class="repo-info"><span class="repo-name">${escapeHtml(repo.name)}</span><span class="repo-path">${escapeHtml(repo.path)}</span></span>
-          <span class="status ${kind}">${escapeHtml(text)}</span>
-          <span class="commits" data-annotate="repository-commits" data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}">${commitsHtml(missing ? null : "pending")}</span>
-        </label>`;
-      }).join("");
+      reposEl.innerHTML = repoTableHtml(repos);
       inspecting = true;
     }
-    document.querySelectorAll(".repo-check").forEach((el) => el.addEventListener("change", updateSelection));
   } catch (error) {
     reposEl.innerHTML = `<p class="empty status error">${escapeHtml(String(error))}</p>`;
   }
@@ -121,20 +162,66 @@ function escapeHtml(value) {
 }
 
 selectAll.addEventListener("change", () => {
-  document.querySelectorAll(".repo-check:not(:disabled)").forEach((el) => { el.checked = selectAll.checked; });
+  document.querySelectorAll(".repo-check:not(:disabled)").forEach((el) => {
+    el.checked = selectAll.checked;
+    markDecided(el.closest(".repo"));
+  });
   updateSelection();
 });
+
+// Sets the selection to exactly the outdated repositories rather than adding
+// to it: with the rows already picked left alone there would be no way to ask
+// for "the outdated ones" once anything else had been chosen, and "Select all"
+// is there to clear.
+function selectOutdated() {
+  document.querySelectorAll(".repo-check:not(:disabled)").forEach((el) => {
+    const row = el.closest(".repo");
+    el.checked = row?.dataset.relation === "behind";
+    markDecided(row);
+  });
+  updateSelection();
+}
+
+// A row the user has decided about is left alone by
+// `select_outdated_by_default`, whether the decision came before or after its
+// fetch. Without this a row turned off while its fetch was still running would
+// come back on when the result landed.
+function markDecided(row) {
+  if (row) row.dataset.decided = "true";
+}
+
+selectOutdatedButton.addEventListener("click", selectOutdated);
 refreshButton.addEventListener("click", refreshRepos);
 
+// The rows are replaced on every load, so the list itself carries the
+// listeners rather than each row getting its own.
+reposEl.addEventListener("change", (event) => {
+  if (!event.target.classList.contains("repo-check")) return;
+  markDecided(event.target.closest(".repo"));
+  updateSelection();
+});
+
+// A row was a label before it became a table row, and clicking anywhere on it
+// went on toggling the box. A click on the box itself is left alone, or it
+// would be toggled twice and stay as it was.
+reposEl.addEventListener("click", (event) => {
+  if (event.target.classList.contains("repo-check")) return;
+  const row = event.target.closest(".repo");
+  const check = row?.querySelector(".repo-check");
+  if (!check || check.disabled) return;
+  check.checked = !check.checked;
+  markDecided(row);
+  updateSelection();
+});
+
 syncButton.addEventListener("click", async () => {
-  const names = selectedNames();
   // An empty list means "every repository" to the backend, which is never what
   // an empty selection should do here.
-  if (!names.length) return;
+  if (!selectedNames().length) return;
   syncing = true;
   updateSelection();
   panesEl.innerHTML = "";
-  logEl.textContent = `pullkit run: ${names.length} repositories\n`;
+  logEl.textContent = "";
   runState.textContent = "Running";
   runState.className = "badge running";
   try {
@@ -145,6 +232,17 @@ syncButton.addEventListener("click", async () => {
       logEl.textContent += "waiting for the remote inspection to finish\n";
       await Promise.all(runningLoads);
     }
+    // Read after the wait rather than before it: rows go on being selected
+    // while it runs, by `select_outdated_by_default` or by hand, and the run
+    // has to be what the list showed when it started.
+    const names = selectedNames();
+    if (!names.length) {
+      logEl.textContent += "nothing is selected any more\n";
+      runState.textContent = "Ready";
+      runState.className = "badge";
+      return;
+    }
+    logEl.textContent += `pullkit run: ${names.length} repositories\n`;
     syncToken = Date.now();
     const results = await invoke("sync_selected", { names, token: syncToken });
     logEl.textContent += "\nSummary\n";
@@ -240,11 +338,34 @@ function showSyncEvent(event) {
 function showCommits(event) {
   const { token, commits } = event.payload;
   if (token !== inspectionToken) return;
-  const el = document.querySelector(`.commits[data-repo="${CSS.escape(commits.name)}"]`);
+  const row = document.querySelector(`.repo[data-repo="${CSS.escape(commits.name)}"]`);
   // The list and the inspection read the config separately, so an edit between
   // the two can point one name at a different directory. Only the row that was
   // drawn for this directory may take the result.
-  if (el && el.dataset.path === commits.path) el.innerHTML = commitsHtml(commits);
+  if (!row || row.dataset.path !== commits.path) return;
+  const cells = commitCells(commits);
+  row.dataset.relation = cells.kind;
+  row.querySelector(".col-local").textContent = cells.local;
+  row.querySelector(".col-remote").textContent = cells.remote;
+  const difference = row.querySelector(".col-difference .difference");
+  difference.className = `difference ${cells.kind}`;
+  difference.title = cells.error;
+  difference.textContent = cells.difference;
+  // Each row is ticked as its own inspection arrives, and only then. A row the
+  // user has already decided about keeps their answer.
+  const check = row.querySelector(".repo-check");
+  if (
+    selectOutdatedByDefault
+    && cells.kind === "behind"
+    && !row.dataset.decided
+    && check
+    && !check.disabled
+  ) {
+    check.checked = true;
+  }
+  // The button turns on once a row is known to be outdated, so this runs for
+  // every result and not only the ones that tick a box.
+  updateSelection();
 }
 
 // The first load has to wait for the listeners: a fetch that finishes before

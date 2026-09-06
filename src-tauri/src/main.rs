@@ -185,7 +185,7 @@ fn run_cli(command: Option<CliCommand>) -> Result<()> {
     match command {
         None => {
             if interactive {
-                if let Some(repos) = run_tui(&config.repos)? {
+                if let Some(repos) = run_tui(&config.repos, config.select_outdated_by_default)? {
                     run_sync(repos, config.concurrency)?;
                 }
             } else {
@@ -366,6 +366,10 @@ fn run_sync(repos: Vec<RepoConfig>, concurrency: usize) -> Result<()> {
 struct TuiState {
     cursor: usize,
     selected: Vec<bool>,
+    /// Rows the user has decided about. `select_outdated_by_default` leaves
+    /// these alone when their inspection arrives: a row turned off while its
+    /// fetch was still running would otherwise come back on when it landed.
+    touched: Vec<bool>,
 }
 
 impl TuiState {
@@ -373,6 +377,7 @@ impl TuiState {
         Self {
             cursor: 0,
             selected: vec![false; repo_count],
+            touched: vec![false; repo_count],
         }
     }
 
@@ -389,6 +394,7 @@ impl TuiState {
     fn toggle_current(&mut self, statuses: &[RepoStatus]) {
         if statuses[self.cursor].path_exists {
             self.selected[self.cursor] = !self.selected[self.cursor];
+            self.touched[self.cursor] = true;
         }
     }
 
@@ -401,13 +407,31 @@ impl TuiState {
         for (index, status) in statuses.iter().enumerate() {
             if status.path_exists {
                 self.selected[index] = !all_selected;
+                self.touched[index] = true;
             }
+        }
+    }
+
+    /// Selects exactly the repositories the remote is ahead of, replacing
+    /// whatever was selected. Adding to the selection instead would leave no
+    /// way to ask for "the outdated ones" once anything else had been picked,
+    /// and `a` already clears a selection.
+    fn select_outdated(&mut self, statuses: &[RepoStatus], commits: &[Option<RepoCommits>]) {
+        for (index, status) in statuses.iter().enumerate() {
+            self.selected[index] = status.path_exists && is_outdated(commits[index].as_ref());
+            self.touched[index] = true;
         }
     }
 
     fn selected_count(&self) -> usize {
         self.selected.iter().filter(|selected| **selected).count()
     }
+}
+
+/// A row whose inspection has not arrived yet is not outdated: nothing is
+/// known about it, and guessing would select rows that turn out to be current.
+fn is_outdated(commits: Option<&RepoCommits>) -> bool {
+    commits.is_some_and(RepoCommits::is_behind)
 }
 
 /// Set once a signal has started the way out, so that no screen is entered
@@ -452,7 +476,10 @@ impl Drop for TerminalSession {
     }
 }
 
-fn run_tui(repos: &[RepoConfig]) -> Result<Option<Vec<RepoConfig>>> {
+fn run_tui(
+    repos: &[RepoConfig],
+    select_outdated_by_default: bool,
+) -> Result<Option<Vec<RepoConfig>>> {
     let statuses: Vec<_> = repos.iter().map(pullkit_core::inspect).collect();
     let mut commits: Vec<Option<RepoCommits>> = vec![None; repos.len()];
     let commit_rx = spawn_commit_inspection(repos);
@@ -474,6 +501,16 @@ fn run_tui(repos: &[RepoConfig]) -> Result<Option<Vec<RepoConfig>>> {
             needs_redraw = false;
         }
         while let Ok((index, item)) = commit_rx.try_recv() {
+            // Each row is selected as its own inspection arrives, and only
+            // then. A row the user has already decided about is left as they
+            // left it, whether that was before or after its fetch came back.
+            if select_outdated_by_default
+                && !state.touched[index]
+                && statuses[index].path_exists
+                && item.is_behind()
+            {
+                state.selected[index] = true;
+            }
             commits[index] = Some(item);
             needs_redraw = true;
         }
@@ -501,6 +538,7 @@ fn run_tui(repos: &[RepoConfig]) -> Result<Option<Vec<RepoConfig>>> {
             KeyCode::Down | KeyCode::Char('j') => state.move_down(),
             KeyCode::Char(' ') => state.toggle_current(&statuses),
             KeyCode::Char('a') => state.toggle_all(&statuses),
+            KeyCode::Char('o') => state.select_outdated(&statuses, &commits),
             KeyCode::Enter if state.selected_count() > 0 => break,
             KeyCode::Esc | KeyCode::Char('q') => return Ok(leave_tui()),
             _ => {}
@@ -624,7 +662,7 @@ fn draw_tui(
     }
 
     let footer = format!(
-        "Space select  a all  Enter sync  q quit    {} selected",
+        "Space select  a all  o outdated  Enter sync  q quit    {} selected",
         state.selected_count()
     );
     queue!(
@@ -822,6 +860,15 @@ fn print_summary(results: &[SyncResult]) {
     }
 }
 
+/// Whether the page should select the outdated repositories on its own. The
+/// page asks for this rather than being told at build time, so that an edit to
+/// the configuration takes effect on the next reload.
+#[tauri::command]
+fn select_outdated_by_default() -> Result<bool, String> {
+    let config = load_config().map_err(|error| format!("{error:#}"))?;
+    Ok(config.select_outdated_by_default)
+}
+
 #[tauri::command]
 fn list_repos() -> Result<Vec<RepoStatus>, String> {
     let config = load_config().map_err(|error| format!("{error:#}"))?;
@@ -910,6 +957,7 @@ fn run_gui() -> Result<()> {
         })
         .invoke_handler(tauri::generate_handler![
             list_repos,
+            select_outdated_by_default,
             inspect_all_commits,
             sync_selected
         ])
@@ -996,6 +1044,7 @@ mod tests {
                 timestamp: 1_000_000 + 2 * 86_400,
                 date: "2026-09-03 09:30".into(),
             }),
+            relation: Some(pullkit_core::CommitRelation::Behind),
             difference: Some("2 days behind".into()),
             error: None,
         };
@@ -1215,5 +1264,100 @@ mod tests {
 
         state.toggle_all(&statuses);
         assert_eq!(state.selected, vec![false, false]);
+    }
+
+    fn commits_with(name: &str, relation: Option<pullkit_core::CommitRelation>) -> RepoCommits {
+        RepoCommits {
+            name: name.into(),
+            path: PathBuf::from(name),
+            local: None,
+            remote: None,
+            relation,
+            difference: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn tui_selects_the_repositories_the_remote_is_ahead_of() {
+        use pullkit_core::CommitRelation::{Ahead, Behind, Diverged, Same};
+
+        // Arrange: one of every relation, plus a row whose fetch has not
+        // arrived and one whose directory is not there.
+        let statuses = vec![
+            status("behind", true),
+            status("current", true),
+            status("ahead", true),
+            status("diverged", true),
+            status("pending", true),
+            status("gone", false),
+        ];
+        let commits = vec![
+            Some(commits_with("behind", Some(Behind))),
+            Some(commits_with("current", Some(Same))),
+            Some(commits_with("ahead", Some(Ahead))),
+            Some(commits_with("diverged", Some(Diverged))),
+            None,
+            Some(commits_with("gone", Some(Behind))),
+        ];
+        let mut state = TuiState::new(statuses.len());
+        // Something already selected, to show the outdated set replaces it.
+        state.selected[2] = true;
+
+        // Act
+        state.select_outdated(&statuses, &commits);
+
+        // Assert
+        assert_eq!(
+            state.selected,
+            vec![true, false, false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn a_row_the_user_decided_about_is_left_alone_by_the_default() {
+        // Arrange
+        let statuses = vec![status("behind", true), status("also-behind", true)];
+        let mut state = TuiState::new(statuses.len());
+
+        // Act: the user turns one on and off again while its fetch is still out.
+        state.toggle_current(&statuses);
+        state.toggle_current(&statuses);
+
+        // Assert: `run_tui` reads `touched` before selecting on arrival, so the
+        // row it covers keeps the answer the user gave it.
+        assert_eq!(state.selected, vec![false, false]);
+        assert_eq!(state.touched, vec![true, false]);
+    }
+
+    #[test]
+    fn selecting_the_outdated_rows_settles_every_row() {
+        // Arrange
+        let statuses = vec![status("behind", true), status("pending", true)];
+        let commits = vec![
+            Some(commits_with(
+                "behind",
+                Some(pullkit_core::CommitRelation::Behind),
+            )),
+            None,
+        ];
+        let mut state = TuiState::new(statuses.len());
+
+        // Act
+        state.select_outdated(&statuses, &commits);
+
+        // Assert: the row still being fetched was decided too, so its result
+        // arriving later does not add it to an explicit selection.
+        assert_eq!(state.selected, vec![true, false]);
+        assert_eq!(state.touched, vec![true, true]);
+    }
+
+    #[test]
+    fn the_footer_offers_the_outdated_shortcut() {
+        // Arrange & Act
+        let screen = rendered_tui(&[None]);
+
+        // Assert
+        assert!(screen.contains("o outdated"), "{screen}");
     }
 }
