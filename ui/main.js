@@ -83,7 +83,11 @@ function commitCellsHtml(cells) {
 
 // A table rather than a row of flex items: every cell of a column is then as
 // wide as the column, so a wider status pill or a shorter date cannot push the
-// cells after it out of line with the rows above.
+// cells after it out of line with the rows above. The row was a `<label>`
+// before, which is what named each checkbox; a `<tr>` cannot wrap one, so the
+// name is given with `aria-label` instead. Without it a screen reader, and the
+// accessibility tree the GUI is driven through in tests, sees a column of
+// checkboxes with nothing to tell them apart.
 function repoTableHtml(repos) {
   const rows = repos.map((repo) => {
     const [kind, text] = statusFor(repo);
@@ -92,7 +96,7 @@ function repoTableHtml(repos) {
     return `<tr class="repo${missing ? " missing" : ""}" data-annotate="repository-row"
       data-repo="${escapeHtml(repo.name)}" data-path="${escapeHtml(repo.path)}" data-relation="${cells.kind}"
       title="${escapeHtml(repo.error || "")}">
-      <td class="col-check"><input class="repo-check" data-annotate="checkbox-repository" type="checkbox" value="${escapeHtml(repo.name)}"${missing ? " disabled" : ""} /></td>
+      <td class="col-check"><input class="repo-check" data-annotate="checkbox-repository" type="checkbox" aria-label="${escapeHtml(repo.name)}" value="${escapeHtml(repo.name)}"${missing ? " disabled" : ""} /></td>
       <td class="col-repo"><span class="repo-name">${escapeHtml(repo.name)}</span><span class="repo-path">${escapeHtml(repo.path)}</span></td>
       <td class="col-status"><span class="status ${kind}">${escapeHtml(text)}</span></td>
       ${commitCellsHtml(cells)}
