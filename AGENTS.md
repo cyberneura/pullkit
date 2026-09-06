@@ -167,11 +167,28 @@ git remote add origin "ssh://git@10.255.255.1:22/nope.git"
   `include_bytes!` で埋め込み、setup で `NSApplication.setApplicationIconImage` に渡す。
   `bundle.icon` は `.app` を作る時にしか効かないので、そこに書いても意味が無い。
   確認は `NSRunningApplication.icon` ではできない (バンドル由来の値を返すため)。
-- **GUI の一覧は `<table>` で組み、`table-layout: fixed` で桁を固定する**。flex の行に
-  `min-width` を置く旧実装では、`Missing` の幅広ステータスや `diverged by 12 months` の
-  長いラベルが後続のセルを押し出し、行ごとに桁がずれた (CYBERNEURA-DEV-687。実測で
-  最大 32px)。列幅を content 依存にしないこと。行全体のクリックでチェックが入る挙動は、
-  `<label>` が使えなくなったので `#repos` に張った click の委譲で保っている。
+- **GUI の一覧は `<table>` で組む**。flex の行に `min-width` を置く旧実装では、
+  `Missing` の幅広ステータスや `diverged by 12 months` の長いラベルが後続のセルを
+  押し出し、行ごとに桁がずれた (CYBERNEURA-DEV-687。実測で最大 32px)。桁が揃うのは
+  `<table>` にしたからで、`table-layout` の値によるものではない。**列幅は
+  `table-layout: auto` のまま、CSS では上限と下限だけを与える** (同タスクで `fixed`
+  から変更)。**固定値で決め打ちしないこと** — 内容に応じて広がるのが意図した挙動で、
+  下限は変動を止めるためだけにある。
+  - Status / Local / Remote / Difference は `min-width`。一覧の fetch は行ごとに
+    返るので、下限が無いと結果が届くたびに列幅が計算し直されて表がガタつく。
+    値はその列が取りうる最長のラベルぶん。
+  - Repository 列は `width: 100%` + `max-width: 0` + `min-width`。前 2 つで
+    「残り幅を取るが、長い path で表を広げはしない」列になり (溢れた path は
+    省略記号)、`min-width` から下は列を縮めずに `.repo-list` を横スクロールさせる。
+  - Status 列だけ `max-width` も持つ。ブランチ名は長さに際限が無く、上限が無いと
+    1 リポジトリで表がウインドウより広くなる。
+  - `.status` / `.difference` は `display: block` + `white-space: nowrap`。
+    `display: inline-block; width: 100%` だと、パーセントは auto レイアウトが
+    測れる幅ではなく、折り返せるラベルは最長単語ぶんしか申告しないため、列は
+    自分の中身の幅を知らないままになる (`fixed` の頃はブランチ名が 116px の列の
+    中で 4 行に折り返していた)。
+  行全体のクリックでチェックが入る挙動は、`<label>` が使えなくなったので `#repos` に
+  張った click の委譲で保っている。
 - **GUI の sync は、待機を挟んだ後に選択を読み直す**。`sync_selected` の前には
   「一覧の fetch が終わるまで待つ」窓があり、その間も `select_outdated_by_default` や
   手動操作で選択は増える。待つ前に読んだ名前で走らせると、画面がチェックを表示している

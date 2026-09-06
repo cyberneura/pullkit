@@ -7,32 +7,58 @@ h2 { margin: 0; font-size: 15px; }
 p { margin: 4px 0 0; }
 .panel-heading, .actions { padding: 14px 16px; }
 .panel-heading { border-bottom: 1px solid #dfe3df; background: #f7f8f7; }
-/* The columns have fixed widths, so a window too narrow for them scrolls
+/* The columns below hold a floor each, so a window too narrow for them scrolls
    rather than squeezing the repository column down to nothing. */
 .repo-list { width: 100%; min-height: 80px; overflow-x: auto; }
-/* Fixed layout so a column is the same width on every row: with the widths
-   taken from the content, a wider status pill or a shorter date moves the
-   cells after it and the columns stop lining up down the list. */
-.repo-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+/* A table is what lines the columns up down the list: every cell of a column
+   is as wide as the column, so a wider status pill or a shorter date cannot
+   push the cells after it out of line with the rows above. The widths
+   themselves are left to the browser (`table-layout: auto`) so that a column
+   takes its width from what it holds; the rules below only bound that. */
+.repo-table { width: 100%; border-collapse: collapse; }
 .repo-table th { padding: 7px 16px; color: #8a938c; font-size: 10px; font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
 .repo-table td { padding: 13px 16px; border-bottom: 1px solid #edf0ec; vertical-align: middle; }
 .col-check { width: 46px; padding-right: 0; }
-.col-status { width: 116px; }
-/* Wide enough for a date and for `diverged by 12 months`, the longest label
-   either column can hold, so that neither has to wrap onto a second line. */
-.col-date { width: 150px; font-family: ui-monospace, monospace; font-size: 11px; color: #344039; white-space: nowrap; }
-.col-difference { width: 184px; }
+/* Floors, not widths. The fetch fills Status, Local, Remote and Difference one
+   row at a time, and auto layout re-measures as each result lands: with
+   nothing holding the columns open they would step outward while the list is
+   read, as `-` turns into a date and `fetching…` into `diverged by 12 months`.
+   Each number is what the widest value that column holds needs, so those steps
+   are absorbed instead of shown. Anything longer still widens its own column,
+   which is what the automatic sizing is here for. */
+/* Bounded above as well, because this column is the one that holds a value
+   with no length to it: a branch name. Past the bound the name is cut with an
+   ellipsis rather than pushing the table wider than the window. */
+.col-status { min-width: 116px; max-width: 260px; }
+.col-date { min-width: 150px; font-family: ui-monospace, monospace; font-size: 11px; color: #344039; white-space: nowrap; }
+.col-difference { min-width: 184px; }
 .repo { cursor: pointer; }
 .repo:hover td { background: #f8faf7; }
 .repo.missing td { background: #f2f3f2; color: #858b87; }
 .repo.missing { cursor: not-allowed; }
 .repo.missing .repo-path, .repo.missing .col-date { color: #969b97; }
 /* The name and the path share one cell, so the cell is what clips: the path
-   can be any length and must not widen the column it sits in. */
-.col-repo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+   can be any length and must not widen the column it sits in. The two width
+   declarations read as a contradiction but act on different steps of the
+   automatic sizing: the maximum bounds the width the column asks for on behalf
+   of its contents (without it a long path widens the table until the list
+   scrolls sideways), and the percentage then claims whatever the columns above
+   leave over. Together they say "this is the column that flexes". The minimum
+   is where it stops flexing: bounded above by nothing but the leftovers, it
+   would otherwise be squeezed down to a few characters by a window narrow
+   enough, or by one long branch name in the status column. Past that point the
+   list scrolls instead. */
+.col-repo { width: 100%; min-width: 160px; max-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .repo-name { font-weight: 650; }
 .repo-path { margin-left: 6px; color: #768078; font-family: ui-monospace, monospace; font-size: 11px; }
-.status, .difference { display: inline-block; width: 100%; border-radius: 999px; padding: 4px 8px; font-size: 11px; text-align: center; }
+/* A block that does not wrap, rather than an inline box at `width: 100%`. It
+   fills the column either way, but the pair is what lets the column size
+   itself: a percentage is not a width the automatic sizing can measure, and a
+   wrappable label reports only its longest word, so between them the column
+   used to be told nothing about its own contents -- a branch name wrapped onto
+   three lines inside a column with room to spare beside it. Saying it will not
+   wrap makes the whole label the width the column has to find. */
+.status, .difference { display: block; overflow: hidden; border-radius: 999px; padding: 4px 8px; font-size: 11px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .status { background: #edf7ee; color: #277039; }
 .status.dirty, .status.error { background: #fff0ed; color: #a23b2b; }
 .status.branch { background: #fff6df; color: #8a6409; }
