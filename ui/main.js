@@ -211,14 +211,13 @@ reposEl.addEventListener("click", (event) => {
 });
 
 syncButton.addEventListener("click", async () => {
-  const names = selectedNames();
   // An empty list means "every repository" to the backend, which is never what
   // an empty selection should do here.
-  if (!names.length) return;
+  if (!selectedNames().length) return;
   syncing = true;
   updateSelection();
   panesEl.innerHTML = "";
-  logEl.textContent = `pullkit run: ${names.length} repositories\n`;
+  logEl.textContent = "";
   runState.textContent = "Running";
   runState.className = "badge running";
   try {
@@ -229,6 +228,17 @@ syncButton.addEventListener("click", async () => {
       logEl.textContent += "waiting for the remote inspection to finish\n";
       await Promise.all(runningLoads);
     }
+    // Read after the wait rather than before it: rows go on being selected
+    // while it runs, by `select_outdated_by_default` or by hand, and the run
+    // has to be what the list showed when it started.
+    const names = selectedNames();
+    if (!names.length) {
+      logEl.textContent += "nothing is selected any more\n";
+      runState.textContent = "Ready";
+      runState.className = "badge";
+      return;
+    }
+    logEl.textContent += `pullkit run: ${names.length} repositories\n`;
     syncToken = Date.now();
     const results = await invoke("sync_selected", { names, token: syncToken });
     logEl.textContent += "\nSummary\n";

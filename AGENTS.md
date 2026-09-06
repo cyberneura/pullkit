@@ -172,6 +172,12 @@ git remote add origin "ssh://git@10.255.255.1:22/nope.git"
   長いラベルが後続のセルを押し出し、行ごとに桁がずれた (CYBERNEURA-DEV-687。実測で
   最大 32px)。列幅を content 依存にしないこと。行全体のクリックでチェックが入る挙動は、
   `<label>` が使えなくなったので `#repos` に張った click の委譲で保っている。
+- **GUI の sync は、待機を挟んだ後に選択を読み直す**。`sync_selected` の前には
+  「一覧の fetch が終わるまで待つ」窓があり、その間も `select_outdated_by_default` や
+  手動操作で選択は増える。待つ前に読んだ名前で走らせると、画面がチェックを表示している
+  リポジトリが同期されない。TUI 側は逆で、Enter を押した時点の選択で走らせる
+  (画面はもう畳まれていて、その後に増えた選択はユーザーに見えていない)。
+  どちらも「ユーザーが最後に見た選択で走らせる」で揃えてある。
 - **`difference` の文言から状態を読み戻さない**。`RepoCommits.relation`
   (`same` / `behind` / `ahead` / `diverged`) が正で、`difference` は人間向けの表記。
   色分けと「Select all outdated」はどちらも relation を見る。
