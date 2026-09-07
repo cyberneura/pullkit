@@ -26,7 +26,7 @@ cargo fmt --all
 node --check ui/main.js      # JS の構文検査 (ビルド工程が無いのでこれで代替する)
 ```
 
-`.jj-menu.yaml` から TUI / GUI / release build / リリース (version bump + push) を起動できる。
+`.j-menu.yaml` から TUI / GUI / release build / リリース (version bump + push) を起動できる。
 
 ## リリース
 
