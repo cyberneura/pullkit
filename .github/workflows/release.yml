@@ -229,7 +229,7 @@ jobs:
           NAME="pullkit-v${VERSION}-${TARGET}"
           mkdir -p "dist/$NAME"
           cp "target/${TARGET}/release/pullkit" "dist/$NAME/"
-          cp README.md config.example.yaml "dist/$NAME/"
+          cp README.md config.example.yaml LICENSE THIRD-PARTY-NOTICES.txt "dist/$NAME/"
           # The archive carries its own directory rather than unpacking into the
           # current one. The Homebrew cask names that directory in its `binary`
           # path, since a cask does not descend into it on its own.

@@ -1,0 +1,12 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; color: #17211b; background: #fff; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+/* The text is long, so it scrolls on its own and the intro stays in view. */
+main { display: flex; flex-direction: column; height: 100vh; padding: 14px 16px; }
+.intro { flex: none; margin: 0 0 12px; font-size: 13px; color: #344039; }
+#licenses-text { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 12px; border: 1px solid #dfe3df; border-radius: 6px; background: #f7f8f7; font-family: ui-monospace, Menlo, monospace; font-size: 11px; line-height: 1.45; white-space: pre-wrap; user-select: text; -webkit-user-select: text; }
+@media (prefers-color-scheme: dark) {
+  :root { color: #e3e8e4; background: #151916; }
+  .intro { color: #b8c2bb; }
+  #licenses-text { border-color: #2c332e; background: #0f1210; color: #d6ddd8; }
+}
