@@ -10,6 +10,7 @@ Tauri の GUI を 1 つのバイナリで提供する。
 | `crates/pullkit-core` | 設定の読み込み、リポジトリの状態調査、コミット日時の取得、同期。UI に依存しない |
 | `src-tauri/src/main.rs` | CLI 引数、TUI (crossterm)、テーブル出力、Tauri コマンド |
 | `src-tauri/src/sync_screen.rs` | sync 中の全画面表示。ワーカーごとのペインにログの末尾を出す |
+| `src-tauri/src/licenses.rs` | `--license` とメニューの Third-Party Licenses。LICENSE と THIRD-PARTY-NOTICES.txt を埋め込む |
 | `ui/` | GUI のフロントエンド。素の HTML / CSS / JS で、ビルド工程は無い |
 
 設定ファイルは `~/.config/pullkit/config.yaml`。無ければ `config.example.yaml` から作られる。
@@ -24,9 +25,30 @@ cargo test --workspace       # ユニットテスト
 cargo clippy --workspace --all-targets
 cargo fmt --all
 node --check ui/main.js      # JS の構文検査 (ビルド工程が無いのでこれで代替する)
+scripts/generate-third-party-notices.sh  # THIRD-PARTY-NOTICES.txt の再生成 (cargo-about が要る)
 ```
 
 `.j-menu.yaml` から TUI / GUI / release build / リリース (version bump + push) を起動できる。
+
+## ライセンス表示
+
+- `LICENSE` (MIT、Cyberneura) と `THIRD-PARTY-NOTICES.txt` は `src-tauri/src/licenses.rs` が
+  `include_str!` でバイナリに埋め込む。配布物は素のバイナリで LICENSE が手元に残らないので、
+  `pullkit --license` も GUI のアプリメニュー (About の直下の Third-Party Licenses) も
+  自分の MIT 本文を先頭に出す。release の tar.gz にも両ファイルを同梱する。
+- **依存を足す・上げる時は `scripts/generate-third-party-notices.sh` を流し直してコミットする。**
+  `cargo test` が「直接依存が Cargo.lock の version で載っているか」「載っている version が
+  Cargo.lock にあるか」を見るので、忘れると落ちる。Dependabot の PR も同じブランチで再生成する。
+- 生成は cargo-about (`cargo install cargo-about --locked --features cli`)。対象は
+  `src-tauri/about.toml` の `targets` (配布している `aarch64-apple-darwin` だけ)。
+  配布ターゲットを増やしたら `targets` も足す。`accepted` に無いライセンスで落ちたら勝手に
+  広げない (GPL 系なら配布条件が変わる)。
+- 自分自身を載せないため、両 crate に `publish = false` を付け、about.toml で `[private] ignore`。
+- GUI のメニューは macOS にしか無い (Tauri は macOS だけ既定メニューを作る)。`app_menu` は
+  既定メニューのアプリメニューの 2 番目 (About の次) に項目を差し込む。Linux でも型検査が
+  通るように cfg で囲わず、呼び出し側だけ macOS に限っている。
+- Third-Party Licenses ウインドウ (`ui/licenses.html`、label `licenses`) は main ウインドウが
+  破棄された時に一緒に閉じる。残るとアプリが終わらず、`RunEvent::Exit` の後始末も走らない。
 
 ## リリース
 

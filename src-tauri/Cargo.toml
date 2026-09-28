@@ -3,6 +3,9 @@ name = "pullkit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not on crates.io. cargo-about also reads this to leave pullkit itself out of
+# THIRD-PARTY-NOTICES.txt.
+publish = false
 description = "Keep a configured set of Git repositories up to date"
 
 [build-dependencies]

@@ -27,6 +27,7 @@ use tauri::Emitter;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+mod licenses;
 mod sync_screen;
 
 #[derive(Parser)]
@@ -39,6 +40,9 @@ struct Args {
     /// Open the graphical interface.
     #[arg(long, global = true)]
     gui: bool,
+    /// Print the license of pullkit and of the libraries it bundles, then exit.
+    #[arg(long, exclusive = true)]
+    license: bool,
     #[command(subcommand)]
     command: Option<CliCommand>,
 }
@@ -59,6 +63,14 @@ enum CliCommand {
 
 fn main() {
     let args = Args::parse();
+    if args.license {
+        // Written rather than printed: `print!` panics when the reader has
+        // gone, as `pullkit --license | head` leaves it.
+        let _ = io::stdout()
+            .lock()
+            .write_all(licenses::LICENSE_TEXT.as_bytes());
+        return;
+    }
     let result = run(args);
     if let Err(error) = result {
         // A signal on its way out is what ends the process then: this thread
@@ -950,22 +962,43 @@ async fn sync_selected(
 /// ends the application without closing the window first, and the window's
 /// own close reaches the exit as well.
 fn run_gui() -> Result<()> {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Tauri gives macOS alone a menu, its default one; this is that menu with
+    // "Third-Party Licenses" added after About.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(licenses::app_menu);
+    builder
         .setup(|_app| {
             set_dock_icon();
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == licenses::MENU_ID {
+                if let Err(error) = licenses::show_window(app) {
+                    eprintln!("pullkit: could not open the licenses window: {error}");
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             list_repos,
             select_outdated_by_default,
             inspect_all_commits,
-            sync_selected
+            sync_selected,
+            licenses::third_party_notices
         ])
         .build(tauri::generate_context!())?
-        .run(|_app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
+        .run(|app, event| match event {
+            tauri::RunEvent::Exit => {
                 pullkit_core::stop_running_commands(Duration::from_secs(3));
             }
+            // The application ends with its last window. Closing the main one
+            // has to end it even while the licenses window is open.
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } if label == "main" => licenses::close_window(app),
+            _ => {}
         });
     Ok(())
 }
@@ -1007,6 +1040,26 @@ fn set_dock_icon() {}
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn license_flag_parses_alone() {
+        // Act
+        let args = Args::try_parse_from(["pullkit", "--license"]).unwrap();
+
+        // Assert
+        assert!(args.license);
+        assert!(!args.gui);
+        assert!(args.command.is_none());
+    }
+
+    #[test]
+    fn license_flag_refuses_other_arguments() {
+        // Act
+        let with_gui = Args::try_parse_from(["pullkit", "--license", "--gui"]);
+
+        // Assert
+        assert!(with_gui.is_err());
+    }
 
     fn status(name: &str, path_exists: bool) -> RepoStatus {
         RepoStatus {

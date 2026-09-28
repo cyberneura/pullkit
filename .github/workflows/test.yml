@@ -64,5 +64,7 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: Syntax-check the GUI script
-        run: node --check ui/main.js
+      - name: Syntax-check the GUI scripts
+        run: |
+          node --check ui/main.js
+          node --check ui/licenses.js

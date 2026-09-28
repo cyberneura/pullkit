@@ -146,6 +146,28 @@ On Windows there are no process groups to signal; a stop takes the command's pro
 down with `taskkill` instead, forcibly, and a process a build left behind after it ended is out
 of reach. Windows is not tested.
 
+## License
+
+pullkit is released under the [MIT License](LICENSE).
+
+## Third-party licenses
+
+The libraries compiled into pullkit and their licenses are listed in
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt). Both texts are built into the binary:
+`pullkit --license` prints them, and the GUI shows them under **Third-Party Licenses** in the
+application menu, right after About. The release archive carries both files as well.
+
+The file is generated with [cargo-about](https://github.com/EmbarkStudios/cargo-about)
+(`cargo install cargo-about --locked --features cli`), and has to be generated again whenever a
+dependency is added or upgraded:
+
+```bash
+scripts/generate-third-party-notices.sh
+```
+
+`cargo test` fails when a direct dependency is missing from the file or a listed version is not
+the one in `Cargo.lock`.
+
 ## Releasing
 
 A release follows the version in `Cargo.toml` on `main`: change it there and push, and
