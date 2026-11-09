@@ -2,6 +2,8 @@
 
 Inspect and sync configured Git repositories.
 
+Website: https://www.cyberneura.com/app/pullkit
+
 - **CLI** (default): list repo status, sync eligible repos
 - **GUI** (`--gui`): Tauri-based graphical interface
 
