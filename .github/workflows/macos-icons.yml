@@ -1,0 +1,28 @@
+name: macOS icons
+on:
+  pull_request:
+    paths:
+      - 'resources/app-icons/**'
+      - 'scripts/*macos-icon*'
+      - 'src-tauri/icons/**'
+      - '**/Info.plist'
+      - '**/tauri*.conf.json'
+      - '.github/workflows/macos-icons.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'resources/app-icons/**'
+      - 'scripts/*macos-icon*'
+      - 'src-tauri/icons/**'
+      - '**/Info.plist'
+      - '**/tauri*.conf.json'
+      - '.github/workflows/macos-icons.yml'
+permissions:
+  contents: read
+jobs:
+  render:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify native icon rendering
+        run: swift scripts/macos-icon.swift verify resources/app-icons/AppIcon.iconset src-tauri/icons Pullkit

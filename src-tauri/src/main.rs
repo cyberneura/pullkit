@@ -1022,7 +1022,7 @@ fn set_dock_icon() {
     let Some(marker) = MainThreadMarker::new() else {
         return;
     };
-    let data = NSData::with_bytes(include_bytes!("../icons/icon.png"));
+    let data = NSData::with_bytes(include_bytes!("../icons/icon.icns"));
     let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
         return;
     };
