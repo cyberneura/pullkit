@@ -9,11 +9,41 @@ let slots: [(type: String, pt: Int, scale: Int)] = [
     ("ic12", 32, 2), ("ic11", 16, 2), ("ic05", 32, 1), ("ic04", 16, 1)
 ]
 
+// Inspect the PNG metadata independently of AppKit. AppKit-to-AppKit pixel
+// comparisons can miss gAMA=2.2, which other decoders display too brightly.
+func validatePNGColorSpace(_ data: Data, name: String) throws {
+    guard data.prefix(8) == Data([137, 80, 78, 71, 13, 10, 26, 10]) else {
+        throw IconError("Expected PNG: \(name)")
+    }
+    var offset = 8
+    var srgb = false
+    while offset < data.count {
+        guard data.count - offset >= 12 else { throw IconError("Truncated PNG: \(name)") }
+        let length = data[offset..<offset + 4].reduce(0) { ($0 << 8) | Int($1) }
+        guard length <= data.count - offset - 12 else { throw IconError("Truncated PNG chunk: \(name)") }
+        let type = String(decoding: data[offset + 4..<offset + 8], as: UTF8.self)
+        let payload = data.subdata(in: offset + 8..<offset + 8 + length)
+        if type == "sRGB" {
+            guard length == 1, payload[0] <= 3 else { throw IconError("Invalid sRGB chunk: \(name)") }
+            srgb = true
+        } else if type == "gAMA" {
+            guard payload == Data([0, 0, 177, 143]) else {
+                throw IconError("Conflicting PNG gamma; export sRGB (gAMA 45455), not display gamma 2.2: \(name)")
+            }
+        } else if type == "iCCP" {
+            throw IconError("Convert artwork to sRGB before export; do not mix ICC and sRGB tags: \(name)")
+        }
+        offset += length + 12
+    }
+    guard srgb else { throw IconError("Missing explicit sRGB PNG tag: \(name)") }
+}
+
 func sourceEntries() throws -> [Entry] {
     try slots.map { slot in
         let suffix = slot.scale == 2 ? "@2x" : ""
         let file = inputDirectory.appendingPathComponent("icon_\(slot.pt)x\(slot.pt)\(suffix).png")
         let data = try Data(contentsOf: file)
+        try validatePNGColorSpace(data, name: file.lastPathComponent)
         let pixels = slot.pt * slot.scale
         guard let b = NSBitmapImageRep(data: data), b.pixelsWide == pixels, b.pixelsHigh == pixels,
               b.hasAlpha else { throw IconError("Expected \(pixels)x\(pixels) PNG with alpha: \(file.path)") }
@@ -120,11 +150,21 @@ func argb(_ data: Data, size: Int) throws -> Data {
     var planes = [[UInt8]](repeating: [], count: 4)
     for y in 0..<size {
         for x in 0..<size {
-            // Keep the bitmap components. Converting colorAt's calibrated color
-            // to deviceRGB here applies an extra transfer curve to raw ARGB.
+            // Preserve bitmap components; another color-space conversion applies
+            // an extra transfer curve when serializing raw ARGB.
             let color = bitmap.colorAt(x: x, y: y)!
-            for (index, value) in [color.alphaComponent, color.redComponent,
-                                   color.greenComponent, color.blueComponent].enumerated() {
+            let rgb: [CGFloat]
+            switch color.colorSpace.colorSpaceModel {
+            case .rgb:
+                rgb = [color.redComponent, color.greenComponent, color.blueComponent]
+            case .gray:
+                // Gray+alpha PNGs return NSCalibratedWhite colors. RGB component
+                // accessors throw on those; copy the gray component to each plane.
+                rgb = [CGFloat](repeating: color.whiteComponent, count: 3)
+            default:
+                throw IconError("Small PNG must use RGB or grayscale components")
+            }
+            for (index, value) in ([color.alphaComponent] + rgb).enumerated() {
                 planes[index].append(UInt8((value * 255).rounded()))
             }
         }
@@ -147,6 +187,7 @@ func render(_ image: NSImage?, icon: IconRef? = nil, size: Int, scale: Int = 1) 
     let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels,
         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
         colorSpaceName: .deviceRGB, bytesPerRow: pixels * 4, bitsPerPixel: 32)!
+        .retagging(with: .sRGB)!
     bitmap.bitmapData!.initialize(repeating: 0, count: bitmap.bytesPerRow * pixels)
     bitmap.size = NSSize(width: size, height: size)
     NSGraphicsContext.saveGraphicsState()
@@ -169,7 +210,7 @@ func verify(_ path: URL, entries: [Entry]) throws {
     let fm = FileManager.default
     let data = try Data(contentsOf: path)
     var icon: IconRef?
-    // Exercise the legacy native decoder that exposed corruption missed by ImageIO;
+    // This deprecated API exercises the decoder that exposed small-icon corruption;
     // unlike NSWorkspace this does not depend on app-icon framing or caching.
     let status = data.withUnsafeBytes { raw in
         GetIconRefFromIconFamilyPtr(UnsafePointer(OpaquePointer(raw.baseAddress!)), data.count, &icon)
@@ -276,7 +317,11 @@ func verifyCatalog(_ path: URL) throws {
         // plate edge with a direct render of the source background as well.
         if scale == 1 && size <= 32 {
             let source = try render(NSImage(data: reference(size == 16 ? 16 : 32)), size: size)
-            let edgeX = (0..<size/2).first { a.colorAt(x: $0, y: size/2)!.alphaComponent >= 0.85 }!
+            guard let edgeX = (0..<size/2).first(where: {
+                a.colorAt(x: $0, y: size/2)!.alphaComponent >= 0.85
+            }) else {
+                throw IconError("\(label): no background edge with alpha >= 0.85; use an opaque background plate")
+            }
             let actualEdge = a.colorAt(x: edgeX, y: size/2)!
             let sourceEdge = source.colorAt(x: 0, y: size/2)!
             let actualRGB = [actualEdge.redComponent, actualEdge.greenComponent, actualEdge.blueComponent]
