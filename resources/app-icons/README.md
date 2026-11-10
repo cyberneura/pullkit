@@ -25,3 +25,9 @@ The outermost small-image pixels retain an antialiased alpha up to 239/255,
 without an empty outer band. Fully opaque edges triggered a light native frame
 on macOS 27. Verification compares native edge colors with the actual source,
 because two equally framed app fixtures can otherwise agree and both be wrong.
+
+Artwork is decoded with ImageIO, preserving embedded profiles, and drawn into
+explicit sRGB buffers. PNG export must retain an sRGB chunk; avoid a PNG
+encode/decode round trip through NSBitmapImageRep, which can re-export
+`gAMA=2.2` and make dark colors pale in other decoders. The shared helper rejects
+missing sRGB or conflicting gamma/ICC metadata before native verification.

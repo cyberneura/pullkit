@@ -9,11 +9,41 @@ let slots: [(type: String, pt: Int, scale: Int)] = [
     ("ic12", 32, 2), ("ic11", 16, 2), ("ic05", 32, 1), ("ic04", 16, 1)
 ]
 
+// Inspect the PNG metadata independently of AppKit. AppKit-to-AppKit pixel
+// comparisons can miss gAMA=2.2, which other decoders display too brightly.
+func validatePNGColorSpace(_ data: Data, name: String) throws {
+    guard data.prefix(8) == Data([137, 80, 78, 71, 13, 10, 26, 10]) else {
+        throw IconError("Expected PNG: \(name)")
+    }
+    var offset = 8
+    var srgb = false
+    while offset < data.count {
+        guard data.count - offset >= 12 else { throw IconError("Truncated PNG: \(name)") }
+        let length = data[offset..<offset + 4].reduce(0) { ($0 << 8) | Int($1) }
+        guard length <= data.count - offset - 12 else { throw IconError("Truncated PNG chunk: \(name)") }
+        let type = String(decoding: data[offset + 4..<offset + 8], as: UTF8.self)
+        let payload = data.subdata(in: offset + 8..<offset + 8 + length)
+        if type == "sRGB" {
+            guard length == 1, payload[0] <= 3 else { throw IconError("Invalid sRGB chunk: \(name)") }
+            srgb = true
+        } else if type == "gAMA" {
+            guard payload == Data([0, 0, 177, 143]) else {
+                throw IconError("Conflicting PNG gamma; export sRGB (gAMA 45455), not display gamma 2.2: \(name)")
+            }
+        } else if type == "iCCP" {
+            throw IconError("Convert artwork to sRGB before export; do not mix ICC and sRGB tags: \(name)")
+        }
+        offset += length + 12
+    }
+    guard srgb else { throw IconError("Missing explicit sRGB PNG tag: \(name)") }
+}
+
 func sourceEntries() throws -> [Entry] {
     try slots.map { slot in
         let suffix = slot.scale == 2 ? "@2x" : ""
         let file = inputDirectory.appendingPathComponent("icon_\(slot.pt)x\(slot.pt)\(suffix).png")
         let data = try Data(contentsOf: file)
+        try validatePNGColorSpace(data, name: file.lastPathComponent)
         let pixels = slot.pt * slot.scale
         guard let b = NSBitmapImageRep(data: data), b.pixelsWide == pixels, b.pixelsHigh == pixels,
               b.hasAlpha else { throw IconError("Expected \(pixels)x\(pixels) PNG with alpha: \(file.path)") }
@@ -104,7 +134,7 @@ func buildCatalog(_ entries: [Entry], beside path: URL) throws {
     try process.run()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else { throw IconError("actool failed: \(process.terminationStatus)") }
-    // Keep the largest-first ICNS instead of the one emitted by actool.
+    // actool の ICNS は使わず、最大サイズが先頭の既存 ICNS を維持する。
     let destination = path.deletingLastPathComponent().appendingPathComponent("Assets.car")
     try Data(contentsOf: output.appendingPathComponent("Assets.car")).write(to: destination, options: .atomic)
     print("Generated \(destination.path)")
@@ -120,17 +150,27 @@ func argb(_ data: Data, size: Int) throws -> Data {
     var planes = [[UInt8]](repeating: [], count: 4)
     for y in 0..<size {
         for x in 0..<size {
-            // Keep the bitmap components. Converting colorAt's calibrated color
-            // to deviceRGB here applies an extra transfer curve to raw ARGB.
+            // Preserve bitmap components; another color-space conversion applies
+            // an extra transfer curve when serializing raw ARGB.
             let color = bitmap.colorAt(x: x, y: y)!
-            for (index, value) in [color.alphaComponent, color.redComponent,
-                                   color.greenComponent, color.blueComponent].enumerated() {
+            let rgb: [CGFloat]
+            switch color.colorSpace.colorSpaceModel {
+            case .rgb:
+                rgb = [color.redComponent, color.greenComponent, color.blueComponent]
+            case .gray:
+                // Gray+alpha PNGs return NSCalibratedWhite colors. RGB component
+                // accessors throw on those; copy the gray component to each plane.
+                rgb = [CGFloat](repeating: color.whiteComponent, count: 3)
+            default:
+                throw IconError("Small PNG must use RGB or grayscale components")
+            }
+            for (index, value) in ([color.alphaComponent] + rgb).enumerated() {
                 planes[index].append(UInt8((value * 255).rounded()))
             }
         }
     }
-    // RLE-encode each ARGB plane in literal runs of at most 128 bytes.
-    // Use unpremultiplied colors; icp4 / icp5 PNGs can render incorrectly in IconServices.
+    // ARGB の各面を 128 バイト以下のリテラルとして RLE 符号化する。
+    // 色はアルファ乗算前の値。PNG を icp4 / icp5 に入れると IconServices で色化けする。
     var body = Data("ARGB".utf8)
     for plane in planes {
         for start in stride(from: 0, to: plane.count, by: 128) {
@@ -147,6 +187,7 @@ func render(_ image: NSImage?, icon: IconRef? = nil, size: Int, scale: Int = 1) 
     let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels,
         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
         colorSpaceName: .deviceRGB, bytesPerRow: pixels * 4, bitsPerPixel: 32)!
+        .retagging(with: .sRGB)!
     bitmap.bitmapData!.initialize(repeating: 0, count: bitmap.bytesPerRow * pixels)
     bitmap.size = NSSize(width: size, height: size)
     NSGraphicsContext.saveGraphicsState()
@@ -169,14 +210,14 @@ func verify(_ path: URL, entries: [Entry]) throws {
     let fm = FileManager.default
     let data = try Data(contentsOf: path)
     var icon: IconRef?
-    // Exercise the legacy native decoder that exposed corruption missed by ImageIO;
-    // unlike NSWorkspace this does not depend on app-icon framing or caching.
+    // 非推奨 API だが、ImageIO が見逃す小サイズの色化けを再現するデコーダーを
+    // 直接通せる。NSWorkspace と違い、OS が付ける枠・影やキャッシュに依存しない。
     let status = data.withUnsafeBytes { raw in
         GetIconRefFromIconFamilyPtr(UnsafePointer(OpaquePointer(raw.baseAddress!)), data.count, &icon)
     }
     guard status == noErr, let icon else { throw IconError("IconServices load failed: \(status)") }
     defer { ReleaseIconRef(icon) }
-    // There is no 64pt slot; downsample 128pt at the same display scale.
+    // 64pt の専用スロットは無いため、同じ倍率の 128pt 画像を縮小する。
     let normalSlots = [64: "ic07", 128: "ic07", 256: "ic08", 512: "ic09"]
     let retinaSlots = [16: "ic11", 32: "ic12", 64: "ic13", 128: "ic13", 256: "ic14", 512: "ic10"]
     var failures: [String] = []
@@ -187,7 +228,7 @@ func verify(_ path: URL, entries: [Entry]) throws {
             if scale == 1 && size <= 32 {
                 data = try reference(pixels)
             } else {
-                // Equal pixel dimensions do not imply the same logical-size representation.
+                // 物理 px が同じでも、通常表示と Retina の画像は別に選ぶ。
                 let slot = (scale == 1 ? normalSlots : retinaSlots)[size]
                 guard let entry = entries.first(where: { $0.type == slot }) else {
                     throw IconError("Missing \(pixels)px slot")
@@ -201,13 +242,13 @@ func verify(_ path: URL, entries: [Entry]) throws {
             let error = (0..<count).reduce(0) { $0 + abs(Int(a.bitmapData![$1]) - Int(b.bitmapData![$1])) }
             let meanError = Double(error) / Double(count)
             let label = "\(size)pt @\(scale)x (\(pixels)px)"
-            // Allow native resampling/color-conversion differences on a 0...255 scale.
-            // Encoding corruption produces much larger differences.
+            // IconServices の縮小・色変換による差は許容する (各チャンネル 0〜255)。
+            // 格納形式に起因する色化けは、小さな縮小・色変換の差より大幅に大きい。
             if meanError <= 8 {
                 print("PASS \(label), mean channel error \(meanError)")
             } else {
                 failures.append("\(label): mean channel error \(meanError) exceeds 8")
-                // Save failed renders for visual inspection locally or in CI.
+                // 失敗した画像だけ保存し、CI や手元で目視できるようにする。
                 let output = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ICON_ARTIFACTS"] ?? NSTemporaryDirectory())
                 try fm.createDirectory(at: output, withIntermediateDirectories: true)
                 for (name, bitmap) in [("actual", a), ("expected", b)] {
@@ -241,7 +282,7 @@ func verifyCatalog(_ path: URL) throws {
         let contents = app.appendingPathComponent("Contents")
         try fm.createDirectory(at: contents.appendingPathComponent("Resources"), withIntermediateDirectories: true)
         try fm.createDirectory(at: contents.appendingPathComponent("MacOS"), withIntermediateDirectories: true)
-        // Assemble a minimal icon-bearing bundle without executing it.
+        // アイコンを読み込める最小のアプリ構造を作る。実行はしない。
         try fm.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: contents.appendingPathComponent("MacOS/probe"))
         var plist: [String: Any] = ["CFBundleIdentifier": "com.example.icon-probe.\(UUID().uuidString)",
             "CFBundleName": "IconProbe", "CFBundlePackageType": "APPL", "CFBundleExecutable": "probe",
@@ -263,7 +304,7 @@ func verifyCatalog(_ path: URL) throws {
     let actual = try appIcon("Actual", catalog: true)
     let fallback = try appIcon("Fallback")
     var failures: [String] = []
-    // Compare small catalog representations with PNG and large ones with ICNS.
+    // 小さい一覧では PNG と同じ全面表示、大きい表示では同じ ICNS と描画が一致することを求める。
     for (size, scale) in [(16, 1), (20, 1), (32, 1), (48, 2), (64, 2), (128, 1), (128, 2)] {
         let expected = size <= 32 ? try appIcon("Reference-\(size)", png: reference(size == 16 ? 16 : 32)) : fallback
         let a = try render(actual, size: size, scale: scale)
@@ -276,7 +317,11 @@ func verifyCatalog(_ path: URL) throws {
         // plate edge with a direct render of the source background as well.
         if scale == 1 && size <= 32 {
             let source = try render(NSImage(data: reference(size == 16 ? 16 : 32)), size: size)
-            let edgeX = (0..<size/2).first { a.colorAt(x: $0, y: size/2)!.alphaComponent >= 0.85 }!
+            guard let edgeX = (0..<size/2).first(where: {
+                a.colorAt(x: $0, y: size/2)!.alphaComponent >= 0.85
+            }) else {
+                throw IconError("\(label): no background edge with alpha >= 0.85; use an opaque background plate")
+            }
             let actualEdge = a.colorAt(x: edgeX, y: size/2)!
             let sourceEdge = source.colorAt(x: 0, y: size/2)!
             let actualRGB = [actualEdge.redComponent, actualEdge.greenComponent, actualEdge.blueComponent]
