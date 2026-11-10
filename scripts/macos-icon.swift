@@ -134,7 +134,7 @@ func buildCatalog(_ entries: [Entry], beside path: URL) throws {
     try process.run()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else { throw IconError("actool failed: \(process.terminationStatus)") }
-    // actool の ICNS は使わず、最大サイズが先頭の既存 ICNS を維持する。
+    // Keep the largest-first ICNS instead of the one emitted by actool.
     let destination = path.deletingLastPathComponent().appendingPathComponent("Assets.car")
     try Data(contentsOf: output.appendingPathComponent("Assets.car")).write(to: destination, options: .atomic)
     print("Generated \(destination.path)")
@@ -169,8 +169,8 @@ func argb(_ data: Data, size: Int) throws -> Data {
             }
         }
     }
-    // ARGB の各面を 128 バイト以下のリテラルとして RLE 符号化する。
-    // 色はアルファ乗算前の値。PNG を icp4 / icp5 に入れると IconServices で色化けする。
+    // RLE-encode each ARGB plane in literal runs of at most 128 bytes.
+    // Use unpremultiplied colors; icp4 / icp5 PNGs can render incorrectly in IconServices.
     var body = Data("ARGB".utf8)
     for plane in planes {
         for start in stride(from: 0, to: plane.count, by: 128) {
@@ -210,14 +210,14 @@ func verify(_ path: URL, entries: [Entry]) throws {
     let fm = FileManager.default
     let data = try Data(contentsOf: path)
     var icon: IconRef?
-    // 非推奨 API だが、ImageIO が見逃す小サイズの色化けを再現するデコーダーを
-    // 直接通せる。NSWorkspace と違い、OS が付ける枠・影やキャッシュに依存しない。
+    // This deprecated API exercises the decoder that exposed small-icon corruption;
+    // unlike NSWorkspace this does not depend on app-icon framing or caching.
     let status = data.withUnsafeBytes { raw in
         GetIconRefFromIconFamilyPtr(UnsafePointer(OpaquePointer(raw.baseAddress!)), data.count, &icon)
     }
     guard status == noErr, let icon else { throw IconError("IconServices load failed: \(status)") }
     defer { ReleaseIconRef(icon) }
-    // 64pt の専用スロットは無いため、同じ倍率の 128pt 画像を縮小する。
+    // There is no 64pt slot; downsample 128pt at the same display scale.
     let normalSlots = [64: "ic07", 128: "ic07", 256: "ic08", 512: "ic09"]
     let retinaSlots = [16: "ic11", 32: "ic12", 64: "ic13", 128: "ic13", 256: "ic14", 512: "ic10"]
     var failures: [String] = []
@@ -228,7 +228,7 @@ func verify(_ path: URL, entries: [Entry]) throws {
             if scale == 1 && size <= 32 {
                 data = try reference(pixels)
             } else {
-                // 物理 px が同じでも、通常表示と Retina の画像は別に選ぶ。
+                // Equal pixel dimensions do not imply the same logical-size representation.
                 let slot = (scale == 1 ? normalSlots : retinaSlots)[size]
                 guard let entry = entries.first(where: { $0.type == slot }) else {
                     throw IconError("Missing \(pixels)px slot")
@@ -242,13 +242,13 @@ func verify(_ path: URL, entries: [Entry]) throws {
             let error = (0..<count).reduce(0) { $0 + abs(Int(a.bitmapData![$1]) - Int(b.bitmapData![$1])) }
             let meanError = Double(error) / Double(count)
             let label = "\(size)pt @\(scale)x (\(pixels)px)"
-            // IconServices の縮小・色変換による差は許容する (各チャンネル 0〜255)。
-            // 格納形式に起因する色化けは、小さな縮小・色変換の差より大幅に大きい。
+            // Allow native resampling/color-conversion differences on a 0...255 scale.
+            // Encoding corruption produces much larger differences.
             if meanError <= 8 {
                 print("PASS \(label), mean channel error \(meanError)")
             } else {
                 failures.append("\(label): mean channel error \(meanError) exceeds 8")
-                // 失敗した画像だけ保存し、CI や手元で目視できるようにする。
+                // Save failed renders for visual inspection locally or in CI.
                 let output = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ICON_ARTIFACTS"] ?? NSTemporaryDirectory())
                 try fm.createDirectory(at: output, withIntermediateDirectories: true)
                 for (name, bitmap) in [("actual", a), ("expected", b)] {
@@ -282,7 +282,7 @@ func verifyCatalog(_ path: URL) throws {
         let contents = app.appendingPathComponent("Contents")
         try fm.createDirectory(at: contents.appendingPathComponent("Resources"), withIntermediateDirectories: true)
         try fm.createDirectory(at: contents.appendingPathComponent("MacOS"), withIntermediateDirectories: true)
-        // アイコンを読み込める最小のアプリ構造を作る。実行はしない。
+        // Assemble a minimal icon-bearing bundle without executing it.
         try fm.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: contents.appendingPathComponent("MacOS/probe"))
         var plist: [String: Any] = ["CFBundleIdentifier": "com.example.icon-probe.\(UUID().uuidString)",
             "CFBundleName": "IconProbe", "CFBundlePackageType": "APPL", "CFBundleExecutable": "probe",
@@ -304,7 +304,7 @@ func verifyCatalog(_ path: URL) throws {
     let actual = try appIcon("Actual", catalog: true)
     let fallback = try appIcon("Fallback")
     var failures: [String] = []
-    // 小さい一覧では PNG と同じ全面表示、大きい表示では同じ ICNS と描画が一致することを求める。
+    // Compare small catalog representations with PNG and large ones with ICNS.
     for (size, scale) in [(16, 1), (20, 1), (32, 1), (48, 2), (64, 2), (128, 1), (128, 2)] {
         let expected = size <= 32 ? try appIcon("Reference-\(size)", png: reference(size == 16 ? 16 : 32)) : fallback
         let a = try render(actual, size: size, scale: scale)
