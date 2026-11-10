@@ -185,7 +185,7 @@ git remote add origin "ssh://git@10.255.255.1:22/nope.git"
   `cargo build` の間ずっと空のままになる。
 - **Dock のアイコンは起動時に自分で設定する**。配布物は `.app` ではなく素のバイナリなので、
   macOS には読む Info.plist が無く、放っておくと汎用の実行ファイルアイコンになる
-  (`NSRunningApplication` の `bundleIdentifier` は `nil`)。`src-tauri/icons/icon.png` を
+  (`NSRunningApplication` の `bundleIdentifier` は `nil`)。`src-tauri/icons/icon.icns` を
   `include_bytes!` で埋め込み、setup で `NSApplication.setApplicationIconImage` に渡す。
   `bundle.icon` は `.app` を作る時にしか効かないので、そこに書いても意味が無い。
   確認は `NSRunningApplication.icon` ではできない (バンドル由来の値を返すため)。
@@ -231,3 +231,17 @@ git remote add origin "ssh://git@10.255.255.1:22/nope.git"
 非同期処理・サブプロセス・複数 UI が交差する変更では、1 周のレビューでは収束しない。
 Codex と code-reviewer の両方が Critical ゼロを返すまで回すこと。両者は得意分野が異なり、
 Codex は並行実行の順序とプロセスの寿命、code-reviewer は実測による裏取りが強い。
+
+## macOS app icon
+
+Run `bash scripts/generate-macos-icons.sh` with Xcode on macOS. Fixed artwork,
+layout measurements, size-specific sources and the verification command are in
+`resources/app-icons/README.md`. Small @1x backgrounds reach the canvas edges;
+the glyph fits inside the central 80%. Larger backgrounds have 10% outer margins.
+Do not replace the generated ICNS with `tauri icon` / `iconutil`: preserve the
+ARGB small entries and the matching Assets.car / CFBundleIconName registration.
+Native rendering is verified by `.github/workflows/macos-icons.yml`.
+
+The distributed CLI is a bare executable: its GUI embeds ICNS and sets
+NSApplication’s icon at startup. Bundle registration applies only to optional
+.app builds; it cannot give a bare binary a System Settings bundle icon.
