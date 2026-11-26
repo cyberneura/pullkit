@@ -1,236 +1,261 @@
 # pullkit
 
-設定した Git リポジトリ群の状態を一覧し、まとめて同期する Rust 製ツール。CLI (TUI) と
-Tauri の GUI を 1 つのバイナリで提供する。
+A Rust tool that lists the state of a configured set of Git repositories and syncs them together.
+It provides a CLI (TUI) and a Tauri GUI in a single binary.
 
-## 構成
+## Layout
 
-| パス | 内容 |
+| Path | Contents |
 |---|---|
-| `crates/pullkit-core` | 設定の読み込み、リポジトリの状態調査、コミット日時の取得、同期。UI に依存しない |
-| `src-tauri/src/main.rs` | CLI 引数、TUI (crossterm)、テーブル出力、Tauri コマンド |
-| `src-tauri/src/sync_screen.rs` | sync 中の全画面表示。ワーカーごとのペインにログの末尾を出す |
-| `src-tauri/src/licenses.rs` | `--license` とメニューの Third-Party Licenses。LICENSE と THIRD-PARTY-NOTICES.txt を埋め込む |
-| `ui/` | GUI のフロントエンド。素の HTML / CSS / JS で、ビルド工程は無い |
+| `crates/pullkit-core` | Loading config, inspecting repository state, fetching commit dates, syncing. Independent of any UI |
+| `src-tauri/src/main.rs` | CLI arguments, TUI (crossterm), table output, Tauri commands |
+| `src-tauri/src/sync_screen.rs` | Full-screen display during sync. Shows the tail of the log in a pane per worker |
+| `src-tauri/src/licenses.rs` | `--license` and the Third-Party Licenses menu item. Embeds LICENSE and THIRD-PARTY-NOTICES.txt |
+| `ui/` | GUI frontend. Plain HTML / CSS / JS with no build step |
 
-設定ファイルは `~/.config/pullkit/config.yaml`。無ければ `config.example.yaml` から作られる。
+The config file is `~/.config/pullkit/config.yaml`. If it does not exist, it is created from `config.example.yaml`.
 
-## 開発コマンド
+## Development commands
 
 ```bash
 cargo run                    # TUI
 cargo run -- --gui           # GUI
-cargo run -- sync            # 同期
-cargo test --workspace       # ユニットテスト
+cargo run -- sync            # sync
+cargo test --workspace       # unit tests
 cargo clippy --workspace --all-targets
 cargo fmt --all
-node --check ui/main.js      # JS の構文検査 (ビルド工程が無いのでこれで代替する)
-scripts/generate-third-party-notices.sh  # THIRD-PARTY-NOTICES.txt の再生成 (cargo-about が要る)
+node --check ui/main.js      # JS syntax check (stands in for a build step, since there is none)
+scripts/generate-third-party-notices.sh  # regenerate THIRD-PARTY-NOTICES.txt (requires cargo-about)
 ```
 
-`.j-menu.yaml` から TUI / GUI / release build / リリース (version bump + push) を起動できる。
+`.j-menu.yaml` can launch the TUI / GUI / release build / release (version bump + push).
 
-## ライセンス表示
+## License notices
 
-- `LICENSE` (MIT、Cyberneura) と `THIRD-PARTY-NOTICES.txt` は `src-tauri/src/licenses.rs` が
-  `include_str!` でバイナリに埋め込む。配布物は素のバイナリで LICENSE が手元に残らないので、
-  `pullkit --license` も GUI のアプリメニュー (About の直下の Third-Party Licenses) も
-  自分の MIT 本文を先頭に出す。release の tar.gz にも両ファイルを同梱する。
-- **依存を足す・上げる時は `scripts/generate-third-party-notices.sh` を流し直してコミットする。**
-  `cargo test` が「直接依存が Cargo.lock の version で載っているか」「載っている version が
-  Cargo.lock にあるか」を見るので、忘れると落ちる。Dependabot の PR も同じブランチで再生成する。
-- 生成は cargo-about (`cargo install cargo-about --locked --features cli`)。対象は
-  `src-tauri/about.toml` の `targets` (配布している `aarch64-apple-darwin` だけ)。
-  配布ターゲットを増やしたら `targets` も足す。`accepted` に無いライセンスで落ちたら勝手に
-  広げない (GPL 系なら配布条件が変わる)。
-- 自分自身を載せないため、両 crate に `publish = false` を付け、about.toml で `[private] ignore`。
-- GUI のメニューは macOS にしか無い (Tauri は macOS だけ既定メニューを作る)。`app_menu` は
-  既定メニューのアプリメニューの 2 番目 (About の次) に項目を差し込む。Linux でも型検査が
-  通るように cfg で囲わず、呼び出し側だけ macOS に限っている。
-- Third-Party Licenses ウインドウ (`ui/licenses.html`、label `licenses`) は main ウインドウが
-  破棄された時に一緒に閉じる。残るとアプリが終わらず、`RunEvent::Exit` の後始末も走らない。
+- `LICENSE` (MIT, Cyberneura) and `THIRD-PARTY-NOTICES.txt` are embedded into the binary by
+  `src-tauri/src/licenses.rs` with `include_str!`. The distributed artifact is a bare binary, so no
+  LICENSE stays on the user's machine; therefore both `pullkit --license` and the GUI's app menu
+  (Third-Party Licenses, right below About) show our own MIT text first. Both files are also
+  bundled in the release tar.gz.
+- **When adding or bumping dependencies, re-run `scripts/generate-third-party-notices.sh` and
+  commit.** `cargo test` checks "are direct dependencies listed at the version in Cargo.lock" and
+  "does each listed version exist in Cargo.lock", so it fails if you forget. Dependabot PRs are
+  regenerated on the same branch too.
+- Generation uses cargo-about (`cargo install cargo-about --locked --features cli`). The targets
+  are `targets` in `src-tauri/about.toml` (only the distributed `aarch64-apple-darwin`). If you add
+  a distribution target, add it to `targets` too. If it fails on a license not in `accepted`, do not
+  widen the list on your own (a GPL-family license would change the distribution terms).
+- To keep ourselves out of the list, both crates have `publish = false`, and about.toml has
+  `[private] ignore`.
+- The GUI menu exists only on macOS (Tauri creates a default menu only on macOS). `app_menu`
+  inserts the item as the 2nd entry (after About) of the default menu's app menu. It is not wrapped
+  in cfg so that type checking also passes on Linux; only the call site is limited to macOS.
+- The Third-Party Licenses window (`ui/licenses.html`, label `licenses`) closes together with the
+  main window when the main window is destroyed. If it remained, the app would not exit and the
+  cleanup in `RunEvent::Exit` would not run either.
 
-## リリース
+## Releases
 
-`main` の `Cargo.toml` (workspace) の version を変えて push するとリリースされる
-(`.github/workflows/release.yml`)。`plan` ジョブが「その version の Release が公開済みか」を
-releases API に訊き、404 の時だけ test → build → release へ進む。判定は diff ではなく状態なので、
-squash / rebase / 直 push で結果が変わらず、失敗した run は原因を直して push すれば続きから走る。
+Changing the version in the (workspace) `Cargo.toml` on `main` and pushing makes a release
+(`.github/workflows/release.yml`). The `plan` job asks the releases API "is a Release for that
+version already published", and only on 404 proceeds to test → build → release. The decision is
+based on state, not on a diff, so the result does not change with squash / rebase / direct push,
+and a failed run continues from where it stopped once you fix the cause and push.
 
-- 採番と push は `scripts/release.sh [patch|minor|major]` (既定 minor)。`Cargo.toml`、
-  `src-tauri/tauri.conf.json`、`Cargo.lock` を揃えて `Release vX.Y.Z` を main に直接 push する。
-- build は macOS arm64 のみ。Tauri を feature で切っていないので Linux レッグは作らない
-  (webkit2gtk を要求する)。素のバイナリを Developer ID で署名し notarytool で公証
-  (`--options runtime` 必須、staple は不可)、`pullkit-vX.Y.Z-aarch64-apple-darwin/pullkit` を含む
-  tar.gz を draft Release に載せ、アセット数を数えてから公開する。
-- 署名の Secrets (APPLE_*) は `~/home-files/sh/github-secret/deploy-github-secret-apple-building.sh`
-  の `repos` に `cyberneura/pullkit` を入れて実行すると 1Password から配られる。欠けていると
-  build が最初のステップで落ちる (黙って未署名で出さない)。
-- Homebrew は `cyberneura/homebrew-tap` の `Casks/pullkit.rb`。tap 側の `scripts/update.py` が毎時
-  latest release を見て version / url / sha256 を書き換えるので、このリポジトリから tap へ push
-  しない。新しい version は tap の cron 間隔ぶん遅れて `brew upgrade` に現れる。
-- `test.yml` は PR でも走る (fmt / clippy -D warnings / test / `node --check`)。release からは
-  `workflow_call` で同じ定義を呼ぶ。
+- Numbering and pushing are done by `scripts/release.sh [patch|minor|major]` (default minor). It
+  aligns `Cargo.toml`, `src-tauri/tauri.conf.json`, and `Cargo.lock` and pushes `Release vX.Y.Z`
+  directly to main.
+- build is macOS arm64 only. Tauri is not split out by feature, so there is no Linux leg (it would
+  require webkit2gtk). The bare binary is signed with Developer ID and notarized with notarytool
+  (`--options runtime` is required; stapling is not possible), a tar.gz containing
+  `pullkit-vX.Y.Z-aarch64-apple-darwin/pullkit` is attached to a draft Release, and it is published
+  after counting the assets.
+- The signing Secrets (APPLE_*) are distributed from 1Password by adding `cyberneura/pullkit` to
+  `repos` in `~/home-files/sh/github-secret/deploy-github-secret-apple-building.sh` and running it.
+  If they are missing, build fails at the first step (it does not silently ship unsigned).
+- Homebrew is `Casks/pullkit.rb` in `cyberneura/homebrew-tap`. The tap's `scripts/update.py` checks
+  the latest release hourly and rewrites version / url / sha256, so do not push to the tap from this
+  repository. A new version shows up in `brew upgrade` delayed by up to the tap's cron interval.
+- `test.yml` also runs on PRs (fmt / clippy -D warnings / test / `node --check`). release calls the
+  same definition via `workflow_call`.
 
-## 検証の方法
+## How to verify
 
-**Rust の E2E 前に必ず `cargo build` する。** `cargo test` / `cargo clippy` は
-`target/debug/pullkit` を再リンクしないので、修正後に build せず実バイナリを触ると旧挙動を見る。
+**Always run `cargo build` before a Rust E2E.** `cargo test` / `cargo clippy` do not relink
+`target/debug/pullkit`, so if you touch the real binary after a fix without building, you see the
+old behavior.
 
-**PATH の `pullkit` は Homebrew の cask で、手元のビルドとは別物。** 公開済みの version が
-入っているだけなので、`pullkit` と打った結果を手元の変更の確認に使わない。検証は
-`./target/debug/pullkit` のようにパスを指定して行う。
+**The `pullkit` on PATH is the Homebrew cask, separate from your local build.** It only contains the
+published version, so do not use the result of typing `pullkit` to check local changes. Verify by
+specifying the path, e.g. `./target/debug/pullkit`.
 
-**コンパイラは `rust-toolchain.toml` で固定してある。** rustup 管理の cargo はこれを読むが、
-Homebrew の `rust` formula の cargo は無視して自分の version で通してしまう。`cargo --version` が
-そこに書いた version と違うなら、手元で clippy が通っても CI では落ちうる。
+**The compiler is pinned by `rust-toolchain.toml`.** rustup-managed cargo reads it, but cargo from
+Homebrew's `rust` formula ignores it and builds with its own version. If `cargo --version` differs
+from the version written there, clippy passing locally does not mean it will pass in CI.
 
 ### TUI
 
-Tauri の GUI ウィンドウはブラウザで確認できないが、TUI は pty 経由で実画面を取れる。
-`pty.fork()` で起動し、エスケープシーケンスを解釈して行を組み立てれば、
-非同期に書き変わるフレームをフレーム単位で検証できる。
+The Tauri GUI window cannot be checked in a browser, but the TUI's real screen can be captured via
+a pty. Launch it with `pty.fork()` and assemble the lines by interpreting escape sequences, and you
+can verify asynchronously changing frames frame by frame.
 
 ### GUI
 
-ネイティブウィンドウなのでブラウザ自動操作は効かない。`orca computer` (`/computer-use` スキル) で
-アクセシビリティツリーから checkbox / button を click でき、スクリーンショットも返る。最初に
-`get-app-state --restore-window` で前面化しないと click が効かない。`HOME` を差し替えて起動すれば
-ユーザーの設定を汚さずに fixture で試せる。画面がロックされていると撮れないので、その場合は
-撮れなかった旨を明示する。
+It is a native window, so browser automation does not work. With `orca computer` (the
+`/computer-use` skill) you can click checkboxes / buttons via the accessibility tree, and it also
+returns screenshots. Clicks do not work unless you first bring it to the front with
+`get-app-state --restore-window`. Launching with a replaced `HOME` lets you try fixtures without
+polluting the user's settings. Screenshots cannot be taken while the screen is locked; in that case,
+state explicitly that they could not be taken.
 
-**`ui/` を編集したら `cargo build` し直す。** Tauri はフロントエンドをビルド時にバイナリへ埋め込む
-ので、debug ビルドでも古い JS / CSS のまま起動する。
+**After editing `ui/`, run `cargo build` again.** Tauri embeds the frontend into the binary at build
+time, so even a debug build launches with the old JS / CSS.
 
-描画ロジックだけなら、`ui/main.js` を Node の `vm` で DOM スタブ上に読み込んで検証できる
-(`window.__TAURI__.core.invoke` と `event.listen` をスタブする)。jsdom を使うと
-`click()` まで含めて実際の DOM で回せる。**`window.eval` に読ませた `let` は
-ページのグローバルにならない**ので、`inspectionToken` のような値は
-`invoke("inspect_all_commits")` に渡された引数から読み戻す。
+For rendering logic alone, you can verify by loading `ui/main.js` onto DOM stubs with Node's `vm`
+(stub `window.__TAURI__.core.invoke` and `event.listen`). With jsdom you can run it against a real
+DOM, including `click()`. **A `let` loaded via `window.eval` does not become a page global**, so read
+values such as `inspectionToken` back from the arguments passed to `invoke("inspect_all_commits")`.
 
-桁揃えのような**レイアウトは jsdom では測れない** (レイアウトエンジンが無い)。
-jsdom で組み立てた DOM を静的 HTML に落とし、`127.0.0.1` ではなく LAN の IP で
-`http.server` を立ててリモート Chrome (agent-browser) に読ませ、
-`getBoundingClientRect()` で列の左端を実測する。**確認が済んだらサーバーは必ず落とす。**
+**Layout such as column alignment cannot be measured in jsdom** (it has no layout engine).
+Dump the DOM assembled in jsdom to static HTML, start `http.server` on the LAN IP rather than
+`127.0.0.1`, have the remote Chrome (agent-browser) load it, and measure the left edges of the
+columns with `getBoundingClientRect()`. **Always shut the server down when you are done checking.**
 
-### リモートを伴う経路
+### Paths involving remotes
 
-タイムアウト・終了時の後始末・ワーカー数を超えるキューは、到達不能な remote を持つ
-一時リポジトリを複数用意すると再現できる。
+Timeouts, cleanup at exit, and queues exceeding the worker count can be reproduced by preparing
+several temporary repositories with an unreachable remote.
 
 ```bash
 git remote add origin "ssh://git@10.255.255.1:22/nope.git"
 ```
 
-## 設計上の約束
+## Design commitments
 
-- **ahead / behind は祖先関係で決める**。コミット日時は任意に設定できるので、時刻の大小で
-  判定すると rebase・amend・時計ずれで逆になる。`git merge-base --is-ancestor` を使い、
-  日時は差の大きさにだけ使う。
-- **同じ `.git` に対する git は同時に走らせない**。`repo_lock` が git ディレクトリ
-  (`git rev-parse --absolute-git-dir`) をキーにロックを配る。一覧の `git fetch` と同期の
-  `git pull` が内包する fetch は `FETCH_HEAD` を共有し、調査側はそれを直後に読み戻すため。
-  排他は UI ではなく git を実行する場所で取る。UI 側の待機は「無言で待たされない」ための UX。
-  linked worktree は `FETCH_HEAD` が worktree ごとなので別キーのままにする。
-- **リモートを触る git は問いかけない**。GUI には端末が無く、TUI では再描画の下にプロンプトが
-  埋もれる。`GIT_TERMINAL_PROMPT=0` を渡し、`GIT_SSH_COMMAND` も `GIT_SSH` も
-  `core.sshCommand` も未設定の時だけ `ssh -o BatchMode=yes` を足す。
-- **端末が Ctrl-C を届けられない git / build は自分のプロセスグループで走らせる**。一覧の fetch、
-  GUI の sync、TUI のペイン画面下の sync がこれに当たる。raw mode の端末では Ctrl-C はシグナルに
-  ならずキー入力になるので、画面側が `interrupt_running_commands` (SIGINT) を送り、2 度目で
-  `terminate_running_commands` (SIGKILL) を送る。画面が自分の都合で抜ける時と GUI を終了した時
-  (`RunEvent::Exit`。ウインドウを閉じても Cmd+Q でもここを通る) と一覧を抜ける時は
-  `stop_running_commands` (SIGINT → 猶予 → SIGKILL)。stdin か stdout が
-  端末でない `pullkit sync` だけが共有グループで、パイプ先の端末で打った Ctrl-C がそのまま届く
-  (cron のように pullkit の pid だけにシグナルを送る側には子は付いてこない)。呼び出し側は
-  `Isolation` で指定する。Windows にはプロセスグループが無いので、`signal_process_group` は
-  SIGINT / SIGKILL の別なく `taskkill /T /F` でプロセスツリーを落とし、build が終わった後に残した
-  プロセスには届かない (未検証)。
-- **端末が消えた時 (SIGHUP) と SIGTERM は自前で受けて `stop_running_commands` してから終わる**。
-  画面下の pull / build と一覧の fetch は自分のプロセスグループにいるので端末の hangup が届かず、
-  デフォルト動作で pullkit だけが先に死ぬと丸ごと残る。`stop_commands_on_hangup` (signal-hook の
-  スレッド) を `run` の先頭で CLI / GUI ともに起動する。SIGINT も受けるのは、Enter 後の
-  「Waiting for the remote inspection」のように cooked mode で自グループのコマンドが走る窓があるため
-  (raw mode の画面では生成されない)。stop の後は `exit()` ではなく同じシグナルで自分を殺す
-  (`emulate_default_handler`)。bash はスクリプトを止めるかを子が SIGINT で死んだかで判断するので、
-  `exit(130)` に戻すとパイプ経路を呼ぶスクリプトが Ctrl-C で止まらなくなる。パイプ経路の
-  pull / build は共有グループで未登録なので stop の対象外。端末が前景グループに送る Ctrl-C / hangup は子にも届くが、pullkit の
-  pid だけに送られたシグナルでは子は残る (従来どおり)。
-- **中断 (`stop_running_commands`) と後始末 (`stop_leftover_commands`) は分ける**。前者は
-  `ABANDONED` を立てるので、そのプロセスではもう run を始められない。sync が終わった後に build が
-  残したプロセスを止めるのは後者で、GUI はウインドウを開いたまま次の sync ができる。
-  パイプ経路の pull / build は共有グループで登録されないので、そこに残ったものは止められない
-  (README にもそう書く)。
-- **`ABANDONED` は立てたら戻さない**。中断は必ずプロセス終了で終わる前提で、run の開始時に戻すと
-  遅れて動き出したワーカースレッドが直前の中断を打ち消す。同じプロセス内で中断の後に run を
-  始める必要ができたら、中断を出す側のスレッドで、run を始める前に戻すこと。
-- **プロセスグループは中身が残っている間 `RUNNING_COMMANDS` に残し、シグナルを送る前に空になった
-  ものを外す**。コマンドが終わってもグループに中身が残っていれば `LEFTOVER_GROUPS` に移し、
-  sync が正常に終わった時に `stop_leftover_commands` で止める (pullkit が起動したものは pullkit と
-  一緒に終わる)。実行中のコマンドと残骸を別のリストにするのは、GUI でページを reload した時など
-  別の run が始めたコマンドを残骸と取り違えて殺さないため。空になったグループの id は別プロセスに
-  再利用されうるので、`killpg(pgid, 0)` で確かめてから送り、コマンドが終わるたびに空になった残骸を
-  リストから外して窓を短くする。確認から送信までの窓は pid ベースである限り残る (pidfd / kqueue が
-  無い前提での割り切り)。シグナルは `kill` バイナリではなく libc で送り、リストの Mutex は送る前に離す。
-- **読むだけの git も `spawn_tracked` で登録し、上限 (`READ_TIMEOUT`) を置く**。hook や fsmonitor で
-  止まった `git status` が `repo_lock` を握ったままになると sync 全体が返らなくなるため。
-  spawn から登録までは `SPAWNING` で数え、stop はそれが 0 になるまで待つ。
-- **パイプの行長 (`MAX_LINE_BYTES`) とチャネル (`PIPE_QUEUE` / `EVENT_QUEUE`) は有界**。改行の無い
-  出力や描画が追いつかない UI でメモリが伸びないように、溢れたら子プロセスの write を待たせる。
-- **sync は status check から build の終わりまで `repo_lock` を持つ**。同じ work tree の中にある
-  2 エントリが並列に走った時、片方の pull がもう片方の build 中のツリーを書き換えないため。
-- **sync のログは `SyncEvent` で流し、行にリポジトリ名を含めない**。`sync_repos` はワーカー数ぶんの
-  スレッドで回し、イベントは呼び出しスレッドで `on_event` に渡す (TUI の描画も Tauri の emit も
-  1 スレッドで済む)。pull と build の出力は行単位でストリームする。まとめて出すとペインが
-  `cargo build` の間ずっと空のままになる。
-- **Dock のアイコンは起動時に自分で設定する**。配布物は `.app` ではなく素のバイナリなので、
-  macOS には読む Info.plist が無く、放っておくと汎用の実行ファイルアイコンになる
-  (`NSRunningApplication` の `bundleIdentifier` は `nil`)。`src-tauri/icons/icon.icns` を
-  `include_bytes!` で埋め込み、setup で `NSApplication.setApplicationIconImage` に渡す。
-  `bundle.icon` は `.app` を作る時にしか効かないので、そこに書いても意味が無い。
-  確認は `NSRunningApplication.icon` ではできない (バンドル由来の値を返すため)。
-- **GUI の一覧は `<table>` で組む**。flex の行に `min-width` を置く旧実装では、
-  `Missing` の幅広ステータスや `diverged by 12 months` の長いラベルが後続のセルを
-  押し出し、行ごとに桁がずれた (CYBERNEURA-DEV-687。実測で最大 32px)。桁が揃うのは
-  `<table>` にしたからで、`table-layout` の値によるものではない。**列幅は
-  `table-layout: auto` のまま、CSS では上限と下限だけを与える** (同タスクで `fixed`
-  から変更)。**固定値で決め打ちしないこと** — 内容に応じて広がるのが意図した挙動で、
-  下限は変動を止めるためだけにある。
-  - Status / Local / Remote / Difference は `min-width`。一覧の fetch は行ごとに
-    返るので、下限が無いと結果が届くたびに列幅が計算し直されて表がガタつく。
-    値はその列が取りうる最長のラベルぶん。
-  - Repository 列は `width: 100%` + `max-width: 0` + `min-width`。前 2 つで
-    「残り幅を取るが、長い path で表を広げはしない」列になり (溢れた path は
-    省略記号)、`min-width` から下は列を縮めずに `.repo-list` を横スクロールさせる。
-  - Status 列だけ `max-width` も持つ。ブランチ名は長さに際限が無く、上限が無いと
-    1 リポジトリで表がウインドウより広くなる。
-  - `.status` / `.difference` は `display: block` + `white-space: nowrap`。
-    `display: inline-block; width: 100%` だと、パーセントは auto レイアウトが
-    測れる幅ではなく、折り返せるラベルは最長単語ぶんしか申告しないため、列は
-    自分の中身の幅を知らないままになる (`fixed` の頃はブランチ名が 116px の列の
-    中で 4 行に折り返していた)。
-  行全体のクリックでチェックが入る挙動は、`<label>` が使えなくなったので `#repos` に
-  張った click の委譲で保っている。
-- **GUI の sync は、待機を挟んだ後に選択を読み直す**。`sync_selected` の前には
-  「一覧の fetch が終わるまで待つ」窓があり、その間も `select_outdated_by_default` や
-  手動操作で選択は増える。待つ前に読んだ名前で走らせると、画面がチェックを表示している
-  リポジトリが同期されない。TUI 側は逆で、Enter を押した時点の選択で走らせる
-  (画面はもう畳まれていて、その後に増えた選択はユーザーに見えていない)。
-  どちらも「ユーザーが最後に見た選択で走らせる」で揃えてある。
-- **`difference` の文言から状態を読み戻さない**。`RepoCommits.relation`
-  (`same` / `behind` / `ahead` / `diverged`) が正で、`difference` は人間向けの表記。
-  色分けと「Select all outdated」はどちらも relation を見る。
-- **桁を数える時は文字数ではなく端末のセル数を使う**。`display_width` / `truncate_to_width` /
-  `pad_to_width` を使い、`chars().count()` や `{:<20}` で幅を扱わない。日本語や絵文字は 2 セルで
-  描画されるため、文字数で数えると行が折り返して次の行を壊す。幅は書記素クラスタ単位で数える。
-  肌色や ZWJ で合成された絵文字は複数のスカラーでも 2 セルなので、スカラー単位では合わない。
-  切り詰めはクラスタ境界で行い、絵文字を途中で割らない。
+- **ahead / behind is determined by ancestry.** Commit dates can be set arbitrarily, so judging by
+  which timestamp is larger gets reversed by rebase, amend, or clock skew. Use
+  `git merge-base --is-ancestor`, and use dates only for the magnitude of the difference.
+- **Never run git concurrently against the same `.git`.** `repo_lock` hands out locks keyed by the
+  git directory (`git rev-parse --absolute-git-dir`). The list's `git fetch` and the fetch included
+  in sync's `git pull` share `FETCH_HEAD`, and the inspection side reads it back right afterwards.
+  The exclusion is taken where git is executed, not in the UI. Waiting on the UI side is UX so that
+  "the user is not kept waiting silently." Linked worktrees have a `FETCH_HEAD` per worktree, so
+  keep them as separate keys.
+- **git that touches remotes must not prompt.** The GUI has no terminal, and in the TUI the prompt
+  gets buried under redraws. Pass `GIT_TERMINAL_PROMPT=0`, and add `ssh -o BatchMode=yes` only when
+  none of `GIT_SSH_COMMAND`, `GIT_SSH`, or `core.sshCommand` is set.
+- **git / build that the terminal cannot deliver Ctrl-C to run in their own process group.** This
+  applies to the list's fetch, the GUI's sync, and the sync below the TUI's pane screen. In a
+  raw-mode terminal Ctrl-C becomes a key input rather than a signal, so the screen sends
+  `interrupt_running_commands` (SIGINT), and on the second press `terminate_running_commands`
+  (SIGKILL). When the screen exits for its own reasons, when the GUI quits (`RunEvent::Exit`;
+  closing the window and Cmd+Q both go through here), and when leaving the list,
+  `stop_running_commands` (SIGINT → grace period → SIGKILL) is used. Only `pullkit sync` with stdin
+  or stdout not being a terminal uses the shared group, so a Ctrl-C typed in the terminal at the end
+  of the pipe reaches it directly (with a sender that signals only pullkit's pid, as cron does, the
+  children do not follow). The caller specifies this with `Isolation`. Windows has no process
+  groups, so `signal_process_group` brings down the process tree with `taskkill /T /F` regardless of
+  SIGINT / SIGKILL, and it does not reach processes left behind after build has finished
+  (unverified).
+- **When the terminal disappears (SIGHUP) and on SIGTERM, catch them ourselves, run
+  `stop_running_commands`, and then exit.** The pull / build below the screen and the list's fetch
+  are in their own process group, so the terminal's hangup does not reach them, and if only pullkit
+  dies first by the default action, they are all left running. `stop_commands_on_hangup` (a
+  signal-hook thread) is started at the top of `run` for both CLI and GUI. SIGINT is caught too,
+  because there are windows where our own group's commands run in cooked mode, such as "Waiting for
+  the remote inspection" after Enter (it is not generated on raw-mode screens). After stopping, kill
+  ourselves with the same signal rather than `exit()` (`emulate_default_handler`). bash decides
+  whether to stop a script based on whether the child died of SIGINT, so reverting to `exit(130)`
+  would make scripts that call the pipe path not stop on Ctrl-C. The pull / build on the pipe path
+  are in the shared group and not registered, so they are not targets of stop. A Ctrl-C / hangup that
+  the terminal sends to the foreground group reaches the children too, but with a signal sent only to
+  pullkit's pid the children remain (as before).
+- **Keep interruption (`stop_running_commands`) and cleanup (`stop_leftover_commands`) separate.**
+  The former sets `ABANDONED`, so that process can no longer start a run. Stopping processes that
+  build left behind after a sync finishes is the latter, and the GUI can do the next sync with the
+  window still open. The pull / build on the pipe path are in the shared group and not registered,
+  so anything left over there cannot be stopped (the README says so too).
+- **Once `ABANDONED` is set, never reset it.** It assumes interruption always ends in process exit;
+  resetting it at the start of a run would let a worker thread that starts late cancel out the
+  interruption just before. If it ever becomes necessary to start a run after an interruption in the
+  same process, reset it on the thread that issues the interruption, before starting the run.
+- **Keep a process group in `RUNNING_COMMANDS` while it still has members, and remove groups that
+  have become empty before sending a signal.** If the group still has members after the command
+  finishes, move it to `LEFTOVER_GROUPS` and stop it with `stop_leftover_commands` when the sync
+  finishes normally (what pullkit started ends with pullkit). Running commands and leftovers are kept
+  in separate lists so that commands started by another run, e.g. when the GUI page is reloaded, are
+  not mistaken for leftovers and killed. The id of an emptied group can be reused by another process,
+  so check with `killpg(pgid, 0)` before sending, and remove emptied leftovers from the list each
+  time a command finishes to shorten the window. The window between the check and the send remains
+  as long as it is pid-based (an accepted trade-off on the assumption that pidfd / kqueue are not
+  available). Signals are sent via libc, not the `kill` binary, and the list's Mutex is released
+  before sending.
+- **Register read-only git with `spawn_tracked` too, and put an upper bound (`READ_TIMEOUT`) on it.**
+  If a `git status` stuck on a hook or fsmonitor keeps holding `repo_lock`, the whole sync never
+  returns. From spawn to registration it is counted in `SPAWNING`, and stop waits until that reaches 0.
+- **Pipe line length (`MAX_LINE_BYTES`) and channels (`PIPE_QUEUE` / `EVENT_QUEUE`) are bounded.** So
+  that memory does not grow with output that has no newlines or a UI whose rendering cannot keep up,
+  when they overflow the child process's write is made to wait.
+- **sync holds `repo_lock` from the status check until the end of build.** When 2 entries inside the
+  same work tree run in parallel, this keeps one's pull from rewriting the tree while the other is
+  building.
+- **sync logs flow through `SyncEvent`, and lines do not include the repository name.**
+  `sync_repos` runs on as many threads as workers, and events are handed to `on_event` on the
+  calling thread (so both TUI rendering and Tauri emit need only 1 thread). The output of pull and
+  build is streamed line by line. Emitting it all at once would leave the pane empty for the whole
+  `cargo build`.
+- **Set the Dock icon ourselves at launch.** The distributed artifact is a bare binary, not a
+  `.app`, so macOS has no Info.plist to read, and if left alone it gets the generic executable icon
+  (`bundleIdentifier` of `NSRunningApplication` is `nil`). `src-tauri/icons/icon.icns` is embedded
+  with `include_bytes!` and passed to `NSApplication.setApplicationIconImage` in setup.
+  `bundle.icon` only takes effect when building a `.app`, so writing it there is pointless.
+  This cannot be checked with `NSRunningApplication.icon` (it returns the bundle-derived value).
+- **Build the GUI list with `<table>`.** In the old implementation that put `min-width` on flex
+  rows, the wide `Missing` status and long labels such as `diverged by 12 months` pushed the
+  following cells out, and columns misaligned row by row (CYBERNEURA-DEV-687; up to 32px measured).
+  Columns align because of `<table>`, not because of the `table-layout` value. **Leave column widths
+  at `table-layout: auto` and give only upper and lower bounds in CSS** (changed from `fixed` in the
+  same task). **Do not hard-code fixed values** — expanding with the content is the intended
+  behavior, and the lower bounds exist only to stop fluctuation.
+  - Status / Local / Remote / Difference have `min-width`. The list's fetch returns row by row, so
+    without a lower bound the column widths are recalculated every time a result arrives and the
+    table jitters. The value is the width of the longest label that column can take.
+  - The Repository column has `width: 100%` + `max-width: 0` + `min-width`. The first 2 make it a
+    column that "takes the remaining width but does not widen the table with a long path"
+    (overflowing paths get an ellipsis), and below `min-width` the column does not shrink and
+    `.repo-list` scrolls horizontally instead.
+  - Only the Status column also has `max-width`. Branch names have no length limit, and without an
+    upper bound a single repository would make the table wider than the window.
+  - `.status` / `.difference` are `display: block` + `white-space: nowrap`. With
+    `display: inline-block; width: 100%`, a percentage is not a width the auto layout can measure,
+    and a wrappable label reports only the width of its longest word, so the column never learns the
+    width of its own content (in the `fixed` days, branch names wrapped onto 4 lines inside a 116px
+    column).
+  The behavior where clicking anywhere on a row toggles its checkbox is kept by delegating clicks
+  on `#repos`, since `<label>` can no longer be used.
+- **The GUI's sync re-reads the selection after any wait.** Before `sync_selected` there is a window
+  of "wait until the list's fetch finishes," during which the selection can grow via
+  `select_outdated_by_default` or manual actions. Running with names read before the wait would
+  leave repositories that the screen shows as checked unsynced. The TUI side is the opposite: it
+  runs with the selection at the moment Enter is pressed (the screen is already collapsed, and
+  selections added after that are not visible to the user).
+  Both are aligned on "run with the selection the user last saw."
+- **Do not read state back from the `difference` wording.** `RepoCommits.relation`
+  (`same` / `behind` / `ahead` / `diverged`) is the source of truth, and `difference` is the
+  human-facing text. Both color coding and "Select all outdated" look at relation.
+- **When counting columns, use terminal cells, not character counts.** Use `display_width` /
+  `truncate_to_width` / `pad_to_width`, and do not handle widths with `chars().count()` or `{:<20}`.
+  Japanese text and emoji are rendered in 2 cells, so counting characters makes lines wrap and break
+  the next line. Widths are counted per grapheme cluster. Emoji composed with skin tones or ZWJ are
+  2 cells even though they are multiple scalars, so counting per scalar does not match. Truncate at
+  cluster boundaries and never split an emoji in the middle.
 
-## AI エージェントによるレビュー
+## Review by AI agents
 
-非同期処理・サブプロセス・複数 UI が交差する変更では、1 周のレビューでは収束しない。
-Codex と code-reviewer の両方が Critical ゼロを返すまで回すこと。両者は得意分野が異なり、
-Codex は並行実行の順序とプロセスの寿命、code-reviewer は実測による裏取りが強い。
+Changes where async processing, subprocesses, and multiple UIs intersect do not converge in one
+round of review. Keep iterating until both Codex and code-reviewer return zero Critical findings.
+They are strong in different areas: Codex in concurrent execution order and process lifetimes,
+code-reviewer in backing claims with actual measurements.
 
 ## macOS app icon
 
